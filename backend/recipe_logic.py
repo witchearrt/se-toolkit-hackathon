@@ -202,3 +202,50 @@ async def update_recipe(db: AsyncSession, recipe_id: int, user_id: int,
 
     await db.commit()
     return True
+
+
+async def update_recipe_ingredients(db: AsyncSession, recipe_id: int, ingredients_str: str):
+    """Обновить только ингредиенты рецепта (raw SQL)"""
+    from sqlalchemy import text
+
+    # Проверяем что рецепт существует
+    result = await db.execute(
+        text("SELECT id FROM recipes WHERE id = :id"),
+        {"id": recipe_id}
+    )
+    if not result.fetchone():
+        return False
+
+    # Удаляем старые ингредиенты
+    await db.execute(
+        text("DELETE FROM recipe_ingredients WHERE recipe_id = :id"),
+        {"id": recipe_id}
+    )
+
+    # Добавляем новые ингредиенты
+    ingredient_parts = [i.strip() for i in ingredients_str.split(",") if i.strip()]
+    for part in ingredient_parts:
+        name, quantity, unit = parse_ingredient(part)
+
+        result = await db.execute(
+            text("SELECT id FROM ingredients WHERE name = :name"),
+            {"name": name}
+        )
+        ing_row = result.fetchone()
+
+        if ing_row:
+            ingredient_id = ing_row[0]
+        else:
+            result = await db.execute(
+                text("INSERT INTO ingredients (name) VALUES (:name) RETURNING id"),
+                {"name": name}
+            )
+            ingredient_id = result.scalar()
+
+        await db.execute(
+            text("INSERT INTO recipe_ingredients (recipe_id, ingredient_id, quantity, unit) VALUES (:rid, :iid, :qty, :unit)"),
+            {"rid": recipe_id, "iid": ingredient_id, "qty": quantity, "unit": unit}
+        )
+
+    await db.commit()
+    return True

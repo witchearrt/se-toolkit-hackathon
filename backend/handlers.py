@@ -49,9 +49,9 @@ class SuggestState(StatesGroup):
 
 class EditRecipeState(StatesGroup):
     recipe_id = State()
-    title = State()
-    ingredients = State()
-    instructions = State()
+    new_title = State()
+    new_ingredients = State()
+    new_instructions = State()
 
 
 # ============ STATE HANDLERS (must be registered FIRST) ============
@@ -101,53 +101,72 @@ async def process_instructions(message: Message, state: FSMContext):
 
 # ============ EDIT RECIPE STATE HANDLERS ============
 
-@router.message(EditRecipeState.title)
-async def edit_title(message: Message, state: FSMContext):
-    await state.update_data(title=message.text)
-    await message.answer(
-        "🥕 Now send **new ingredients with quantities** (comma-separated):\n"
-        "e.g., 'tomatoes 4 pcs, cottage cheese 200g, flour 500g'"
-    )
-    await state.set_state(EditRecipeState.ingredients)
-
-
-@router.message(EditRecipeState.ingredients)
-async def edit_ingredients(message: Message, state: FSMContext):
-    await state.update_data(ingredients=message.text)
-    await message.answer("👨‍🍳 Now send **new cooking instructions**:\n(step-by-step)")
-    await state.set_state(EditRecipeState.instructions)
-
-
-@router.message(EditRecipeState.instructions)
-async def edit_instructions(message: Message, state: FSMContext):
+@router.message(EditRecipeState.new_title)
+async def edit_new_title(message: Message, state: FSMContext):
     data = await state.get_data()
     rid = data["recipe_id"]
 
     async with async_session() as db:
-        user = await recipe_logic.get_or_create_user(db, str(message.from_user.id))
-        ok = await recipe_logic.update_recipe(
-            db=db,
-            recipe_id=rid,
-            user_id=user.id,
-            title=data["title"],
-            instructions=message.text,
-            ingredients_str=data["ingredients"],
+        from sqlalchemy import text
+        await db.execute(
+            text("UPDATE recipes SET title = :title WHERE id = :id"),
+            {"title": message.text, "id": rid}
         )
+        await db.commit()
 
-        if ok:
-            await message.answer(
-                f"✅ **Recipe updated!**\n\n"
-                f"📖 **{data['title']}**\n"
-                f"🔢 ID: `{rid}`",
-                parse_mode="Markdown",
-                reply_markup=main_keyboard,
-            )
-        else:
-            await message.answer(
-                "❌ Recipe not found or doesn't belong to you.",
-                reply_markup=main_keyboard,
-            )
-        await state.clear()
+    await message.answer(
+        f"✅ **Title updated!**\n\n"
+        f"📖 **{message.text}**\n"
+        f"🔢 ID: `{rid}`",
+        parse_mode="Markdown",
+        reply_markup=main_keyboard,
+    )
+    await state.clear()
+
+
+@router.message(EditRecipeState.new_ingredients)
+async def edit_new_ingredients(message: Message, state: FSMContext):
+    data = await state.get_data()
+    rid = data["recipe_id"]
+
+    async with async_session() as db:
+        ok = await recipe_logic.update_recipe_ingredients(db, rid, message.text)
+
+    if ok:
+        await message.answer(
+            f"✅ **Ingredients updated!**\n\n"
+            f"🔢 Recipe ID: `{rid}`",
+            parse_mode="Markdown",
+            reply_markup=main_keyboard,
+        )
+    else:
+        await message.answer(
+            "❌ Recipe not found.",
+            reply_markup=main_keyboard,
+        )
+    await state.clear()
+
+
+@router.message(EditRecipeState.new_instructions)
+async def edit_new_instructions(message: Message, state: FSMContext):
+    data = await state.get_data()
+    rid = data["recipe_id"]
+
+    async with async_session() as db:
+        from sqlalchemy import text
+        await db.execute(
+            text("UPDATE recipes SET instructions = :inst WHERE id = :id"),
+            {"inst": message.text, "id": rid}
+        )
+        await db.commit()
+
+    await message.answer(
+        f"✅ **Instructions updated!**\n\n"
+        f"🔢 Recipe ID: `{rid}`",
+        parse_mode="Markdown",
+        reply_markup=main_keyboard,
+    )
+    await state.clear()
 
 
 @router.message(SuggestState.ingredients)
@@ -391,6 +410,48 @@ async def handle_delete(callback: CallbackQuery):
 async def handle_edit(callback: CallbackQuery, state: FSMContext):
     rid = int(callback.data.split("_")[1])
     await state.update_data(recipe_id=rid)
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📝 Title", callback_data=f"editf_title_{rid}")],
+        [InlineKeyboardButton(text="🥕 Ingredients", callback_data=f"editf_ingredients_{rid}")],
+        [InlineKeyboardButton(text="👨‍🍳 Instructions", callback_data=f"editf_instructions_{rid}")],
+        [InlineKeyboardButton(text="❌ Cancel", callback_data="edit_cancel")],
+    ])
+    
     await callback.message.delete()
-    await callback.message.answer("📝 Enter **new recipe title**:", parse_mode="Markdown")
-    await state.set_state(EditRecipeState.title)
+    await callback.message.answer(
+        "✏️ **What would you like to edit?**\n\n"
+        f"🔢 Recipe ID: `{rid}`",
+        parse_mode="Markdown",
+        reply_markup=kb,
+    )
+
+
+@router.callback_query(F.data.startswith("editf_"))
+async def handle_edit_field(callback: CallbackQuery, state: FSMContext):
+    parts = callback.data.split("_")
+    field = parts[1]
+    rid = int(parts[3])
+    
+    await state.update_data(recipe_id=rid)
+    
+    if field == "title":
+        await callback.message.edit_text("📝 Enter **new title**:", parse_mode="Markdown")
+        await state.set_state(EditRecipeState.new_title)
+    elif field == "ingredients":
+        await callback.message.edit_text(
+            "🥕 Enter **new ingredients** (comma-separated):\n"
+            "e.g., 'tomatoes 4 pcs, cheese 200g'",
+            parse_mode="Markdown",
+        )
+        await state.set_state(EditRecipeState.new_ingredients)
+    elif field == "instructions":
+        await callback.message.edit_text("👨‍🍳 Enter **new instructions**:", parse_mode="Markdown")
+        await state.set_state(EditRecipeState.new_instructions)
+
+
+@router.callback_query(F.data == "edit_cancel")
+async def handle_edit_cancel(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await callback.message.delete()
+    await callback.message.answer("✏️ Edit cancelled.", reply_markup=main_keyboard)
