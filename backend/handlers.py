@@ -1,14 +1,26 @@
 import logging
 from aiogram import Router
 from aiogram.filters import CommandStart, Command
-from aiogram.types import Message
+from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from aiogram import F
 
 import recipe_logic
 from database import get_db
 
 router = Router()
+
+# Main menu keyboard
+main_keyboard = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="➕ Add Recipe"), KeyboardButton(text="📚 My Recipes")],
+        [KeyboardButton(text="🔍 Suggest Recipe"), KeyboardButton(text="🗑 Delete Recipe")],
+        [KeyboardButton(text="❓ Help")],
+    ],
+    resize_keyboard=True,
+    input_field_placeholder="Choose an action...",
+)
 
 # States for adding recipe
 class AddRecipeState(StatesGroup):
@@ -27,50 +39,56 @@ class SuggestState(StatesGroup):
 async def cmd_start(message: Message):
     """Handle /start command"""
     username = message.from_user.username or message.from_user.full_name
-    
+
     async for db in get_db():
         await recipe_logic.get_or_create_user(db, str(message.from_user.id), username)
 
         welcome_text = (
             f"👋 **Welcome, {username}!**\n\n"
             "I'm your **Recipe Assistant** bot! 🍳\n\n"
-            "Here's what I can do:\n"
-            "📝 `/add_recipe` — Save a new recipe\n"
-            "📚 `/my_recipes` — View your saved recipes\n"
-            "🔍 `/suggest` — Get recipe suggestions based on ingredients you have\n"
-            "🗑 `/delete_recipe` — Delete a recipe\n"
-            "❓ `/help` — Show this help message\n\n"
-            "Try `/add_recipe` to save your first recipe!"
+            "Use the buttons below to get started:\n"
+            "➕ **Add Recipe** — Save a new recipe\n"
+            "📚 **My Recipes** — View your saved recipes\n"
+            "🔍 **Suggest Recipe** — Get suggestions based on ingredients\n"
+            "🗑 **Delete Recipe** — Remove a recipe\n"
+            "❓ **Help** — Show help message\n\n"
+            "Tap **➕ Add Recipe** to save your first recipe!"
         )
-        await message.answer(welcome_text, parse_mode="Markdown")
+        await message.answer(welcome_text, parse_mode="Markdown", reply_markup=main_keyboard)
 
 
-@router.message(Command("help"))
+@router.message(F.text == "❓ Help")
 async def cmd_help(message: Message):
-    """Handle /help command"""
+    """Handle help button"""
     help_text = (
         "🤖 **Recipe Bot Help**\n\n"
-        "**Commands:**\n"
-        "/start — Start the bot\n"
-        "/add_recipe — Add a new recipe (interactive)\n"
-        "/my_recipes — List all your recipes\n"
-        "/suggest — Get recipe suggestions by ingredients\n"
-        "/delete_recipe — Delete a recipe by ID\n"
-        "/help — Show this message\n\n"
+        "**Buttons:**\n"
+        "➕ **Add Recipe** — Add a new recipe (interactive)\n"
+        "📚 **My Recipes** — List all your recipes\n"
+        "🔍 **Suggest Recipe** — Get recipe suggestions by ingredients\n"
+        "🗑 **Delete Recipe** — Delete a recipe by ID\n"
+        "❓ **Help** — Show this message\n\n"
         "**How to add a recipe:**\n"
-        "1. Send `/add_recipe`\n"
+        "1. Tap **➕ Add Recipe**\n"
         "2. Enter recipe title\n"
         "3. Enter ingredients (comma-separated)\n"
         "4. Enter description (optional, type 'skip' to skip)\n"
         "5. Enter cooking instructions\n\n"
         "**How to get suggestions:**\n"
-        "1. Send `/suggest`\n"
+        "1. Tap **🔍 Suggest Recipe**\n"
         "2. Enter ingredients you have (comma-separated)\n"
         "3. I'll find matching recipes!"
     )
-    await message.answer(help_text, parse_mode="Markdown")
+    await message.answer(help_text, parse_mode="Markdown", reply_markup=main_keyboard)
 
 
+@router.message(Command("help"))
+async def cmd_help_slash(message: Message):
+    """Handle /help command"""
+    await cmd_help(message)
+
+
+@router.message(F.text == "➕ Add Recipe")
 @router.message(Command("add_recipe"))
 async def cmd_add_recipe(message: Message, state: FSMContext):
     """Start adding a recipe"""
@@ -136,14 +154,16 @@ async def process_instructions(message: Message, state: FSMContext):
             f"✅ **Recipe saved!**\n\n"
             f"📖 **Title:** {recipe.title}\n"
             f"🔢 **ID:** `{recipe.id}`\n\n"
-            f"Use `/my_recipes` to see all your recipes.",
+            f"Tap **📚 My Recipes** to see all your recipes.",
             parse_mode="Markdown",
+            reply_markup=main_keyboard,
         )
         await state.clear()
         return
 
 
 @router.message(Command("my_recipes"))
+@router.message(F.text == "📚 My Recipes")
 async def cmd_my_recipes(message: Message):
     """Show user's recipes"""
     async for db in get_db():
@@ -151,7 +171,11 @@ async def cmd_my_recipes(message: Message):
         recipes = await recipe_logic.get_user_recipes(db, user.id)
 
         if not recipes:
-            await message.answer("📭 You don't have any recipes yet!\nUse `/add_recipe` to add one.", parse_mode="Markdown")
+            await message.answer(
+                "📭 You don't have any recipes yet!\n\nTap **➕ Add Recipe** to add one.",
+                parse_mode="Markdown",
+                reply_markup=main_keyboard,
+            )
             return
 
         text = f"📚 **Your Recipes** ({len(recipes)} total):\n\n"
@@ -165,13 +189,14 @@ async def cmd_my_recipes(message: Message):
                 f"🥕 {ingredients_list}\n\n"
             )
 
-        text += "💡 Use `/suggest` to find what to cook!\n"
-        text += "🗑 Use `/delete_recipe <ID>` to remove a recipe."
+        text += "💡 Tap **🔍 Suggest Recipe** to find what to cook!\n"
+        text += "🗑 Tap **🗑 Delete Recipe** to remove a recipe."
 
-        await message.answer(text, parse_mode="Markdown")
+        await message.answer(text, parse_mode="Markdown", reply_markup=main_keyboard)
 
 
 @router.message(Command("suggest"))
+@router.message(F.text == "🔍 Suggest Recipe")
 async def cmd_suggest(message: Message, state: FSMContext):
     """Start recipe suggestion"""
     await message.answer(
@@ -214,33 +239,64 @@ async def process_suggest(message: Message, state: FSMContext):
                 f"❌ Missing: {', '.join(missing) if missing else 'nothing!'}\n\n"
             )
 
-        text += "💡 Use `/delete_recipe <ID>` to remove a recipe."
+        text += "💡 Tap **🔍 Suggest Recipe** to find what to cook!"
 
-        await message.answer(text, parse_mode="Markdown")
+        await message.answer(text, parse_mode="Markdown", reply_markup=main_keyboard)
         await state.clear()
 
 
+# Keyboard for delete recipe selection
+def get_delete_keyboard(recipes):
+    """Create inline keyboard for recipe deletion"""
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=f"🗑 #{recipe.id} {recipe.title}", callback_data=f"delete_{recipe.id}")]
+            for recipe in recipes[:10]  # Show max 10 recipes
+        ]
+    )
+    return keyboard
+
+
 @router.message(Command("delete_recipe"))
+@router.message(F.text == "🗑 Delete Recipe")
 async def cmd_delete_recipe(message: Message):
-    """Delete a recipe by ID"""
-    parts = message.text.split()
-    if len(parts) < 2 or not parts[1].isdigit():
-        await message.answer(
-            "🗑 **Delete Recipe**\n\n"
-            "Usage: `/delete_recipe <ID>`\n"
-            "e.g., `/delete_recipe 5`\n\n"
-            "Use `/my_recipes` to see recipe IDs.",
-            parse_mode="Markdown",
-        )
-        return
-
-    recipe_id = int(parts[1])
-
+    """Show recipes with buttons for deletion"""
     async for db in get_db():
         user = await recipe_logic.get_or_create_user(db, str(message.from_user.id))
+        recipes = await recipe_logic.get_user_recipes(db, user.id)
+
+        if not recipes:
+            await message.answer(
+                "📭 You don't have any recipes yet!\n\nTap **➕ Add Recipe** to add one.",
+                parse_mode="Markdown",
+                reply_markup=main_keyboard,
+            )
+            return
+
+        await message.answer(
+            "🗑 **Select a recipe to delete:**\n\n"
+            "Tap a button below to remove that recipe.",
+            parse_mode="Markdown",
+            reply_markup=get_delete_keyboard(recipes),
+        )
+
+
+@router.callback_query(F.data.startswith("delete_"))
+async def handle_delete_callback(callback: CallbackQuery):
+    """Handle recipe deletion from inline keyboard"""
+    recipe_id = int(callback.data.split("_")[1])
+
+    async for db in get_db():
+        user = await recipe_logic.get_or_create_user(db, str(callback.from_user.id))
         success = await recipe_logic.delete_recipe(db, recipe_id, user.id)
 
         if success:
-            await message.answer(f"✅ Recipe #{recipe_id} deleted!")
+            await callback.message.edit_text(
+                f"✅ Recipe #{recipe_id} deleted!",
+                reply_markup=main_keyboard,
+            )
         else:
-            await message.answer(f"❌ Recipe #{recipe_id} not found or doesn't belong to you.")
+            await callback.message.edit_text(
+                f"❌ Recipe #{recipe_id} not found or doesn't belong to you.",
+                reply_markup=main_keyboard,
+            )
