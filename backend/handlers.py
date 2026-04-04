@@ -17,8 +17,8 @@ router = Router()
 main_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="➕ Add Recipe"), KeyboardButton(text="📚 My Recipes")],
-        [KeyboardButton(text="🔍 Suggest Recipe"), KeyboardButton(text="🗑 Delete Recipe")],
-        [KeyboardButton(text="❓ Help")],
+        [KeyboardButton(text="🔍 Suggest Recipe"), KeyboardButton(text="✏️ Edit Recipe")],
+        [KeyboardButton(text="🗑 Delete Recipe"), KeyboardButton(text="❓ Help")],
     ],
     resize_keyboard=True,
     input_field_placeholder="Choose an action...",
@@ -45,6 +45,13 @@ class AddRecipeState(StatesGroup):
 
 class SuggestState(StatesGroup):
     ingredients = State()
+
+
+class EditRecipeState(StatesGroup):
+    recipe_id = State()
+    title = State()
+    ingredients = State()
+    instructions = State()
 
 
 # ============ STATE HANDLERS (must be registered FIRST) ============
@@ -89,6 +96,57 @@ async def process_instructions(message: Message, state: FSMContext):
             parse_mode="Markdown",
             reply_markup=main_keyboard,
         )
+        await state.clear()
+
+
+# ============ EDIT RECIPE STATE HANDLERS ============
+
+@router.message(EditRecipeState.title)
+async def edit_title(message: Message, state: FSMContext):
+    await state.update_data(title=message.text)
+    await message.answer(
+        "🥕 Now send **new ingredients with quantities** (comma-separated):\n"
+        "e.g., 'tomatoes 4 pcs, cottage cheese 200g, flour 500g'"
+    )
+    await state.set_state(EditRecipeState.ingredients)
+
+
+@router.message(EditRecipeState.ingredients)
+async def edit_ingredients(message: Message, state: FSMContext):
+    await state.update_data(ingredients=message.text)
+    await message.answer("👨‍🍳 Now send **new cooking instructions**:\n(step-by-step)")
+    await state.set_state(EditRecipeState.instructions)
+
+
+@router.message(EditRecipeState.instructions)
+async def edit_instructions(message: Message, state: FSMContext):
+    data = await state.get_data()
+    rid = data["recipe_id"]
+
+    async for db in get_db():
+        user = await recipe_logic.get_or_create_user(db, str(message.from_user.id))
+        ok = await recipe_logic.update_recipe(
+            db=db,
+            recipe_id=rid,
+            user_id=user.id,
+            title=data["title"],
+            instructions=message.text,
+            ingredients_str=data["ingredients"],
+        )
+
+        if ok:
+            await message.answer(
+                f"✅ **Recipe updated!**\n\n"
+                f"📖 **{data['title']}**\n"
+                f"🔢 ID: `{rid}`",
+                parse_mode="Markdown",
+                reply_markup=main_keyboard,
+            )
+        else:
+            await message.answer(
+                "❌ Recipe not found or doesn't belong to you.",
+                reply_markup=main_keyboard,
+            )
         await state.clear()
 
 
@@ -257,10 +315,39 @@ async def _show_delete(message: Message):
             return
 
         kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=f"🗑 #{r.id} {r.title}", callback_data=f"delete_{r.id}")]
+            [InlineKeyboardButton(text=f"✏️ #{r.id} {r.title}", callback_data=f"edit_{r.id}")]
             for r in recipes[:10]
         ])
-        await message.answer("🗑 Tap to delete:", reply_markup=kb)
+        await message.answer("✏️ **Select recipe to edit:**", reply_markup=kb, parse_mode="Markdown")
+
+
+@router.message(Command("edit_recipe"))
+async def cmd_edit_slash(message: Message):
+    await _show_edit(message)
+
+
+@router.message(F.text == "✏️ Edit Recipe", StateFilter(None))
+async def cmd_edit_btn(message: Message):
+    await _show_edit(message)
+
+
+async def _show_edit(message: Message):
+    async for db in get_db():
+        user = await recipe_logic.get_or_create_user(db, str(message.from_user.id))
+        recipes = await recipe_logic.get_user_recipes(db, user.id)
+
+        if not recipes:
+            await message.answer(
+                "📭 No recipes!\nTap **➕ Add Recipe** first.",
+                reply_markup=main_keyboard,
+            )
+            return
+
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=f"✏️ #{r.id} {r.title}", callback_data=f"edit_{r.id}")]
+            for r in recipes[:10]
+        ])
+        await message.answer("✏️ **Select recipe to edit:**", reply_markup=kb, parse_mode="Markdown")
 
 
 # ============ CALLBACKS ============
@@ -296,3 +383,12 @@ async def handle_delete(callback: CallbackQuery):
             await callback.message.answer("✅ Recipe successfully deleted!", reply_markup=main_keyboard)
         else:
             await callback.answer("❌ Recipe not found!", show_alert=True)
+
+
+@router.callback_query(F.data.startswith("edit_"))
+async def handle_edit(callback: CallbackQuery, state: FSMContext):
+    rid = int(callback.data.split("_")[1])
+    await state.update_data(recipe_id=rid)
+    await callback.message.delete()
+    await callback.message.answer("📝 Enter **new recipe title**:", parse_mode="Markdown")
+    await state.set_state(EditRecipeState.title)

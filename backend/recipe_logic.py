@@ -145,3 +145,48 @@ async def delete_recipe(db: AsyncSession, recipe_id: int, user_id: int):
         await db.commit()
         return True
     return False
+
+
+async def update_recipe(db: AsyncSession, recipe_id: int, user_id: int,
+                        title: str, instructions: str, ingredients_str: str):
+    """Обновить рецепт (title, instructions, ingredients)"""
+    result = await db.execute(
+        select(Recipe).where(Recipe.id == recipe_id, Recipe.user_id == user_id)
+    )
+    recipe = result.scalar_one_or_none()
+
+    if not recipe:
+        return False
+
+    # Обновляем основные поля
+    recipe.title = title
+    recipe.instructions = instructions
+
+    # Удаляем старые ингредиенты
+    for link in recipe.ingredient_links:
+        await db.delete(link)
+    await db.flush()
+
+    # Добавляем новые ингредиенты
+    ingredient_parts = [i.strip() for i in ingredients_str.split(",") if i.strip()]
+    for part in ingredient_parts:
+        name, quantity, unit = parse_ingredient(part)
+
+        ing_result = await db.execute(select(Ingredient).where(func.lower(Ingredient.name) == name))
+        ingredient = ing_result.scalar_one_or_none()
+
+        if not ingredient:
+            ingredient = Ingredient(name=name)
+            db.add(ingredient)
+            await db.flush()
+
+        link = RecipeIngredient(
+            recipe_id=recipe.id,
+            ingredient_id=ingredient.id,
+            quantity=quantity,
+            unit=unit,
+        )
+        db.add(link)
+
+    await db.commit()
+    return True
