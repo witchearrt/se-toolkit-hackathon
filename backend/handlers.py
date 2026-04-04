@@ -40,7 +40,6 @@ def format_ingredient(link) -> str:
 class AddRecipeState(StatesGroup):
     title = State()
     ingredients = State()
-    description = State()
     instructions = State()
 
 
@@ -64,14 +63,6 @@ async def process_title(message: Message, state: FSMContext):
 @router.message(AddRecipeState.ingredients)
 async def process_ingredients(message: Message, state: FSMContext):
     await state.update_data(ingredients=message.text)
-    await message.answer("📝 Send a **description** (optional, type 'skip'):")
-    await state.set_state(AddRecipeState.description)
-
-
-@router.message(AddRecipeState.description)
-async def process_description(message: Message, state: FSMContext):
-    desc = message.text if message.text.lower() != "skip" else None
-    await state.update_data(description=desc)
     await message.answer("👨‍🍳 Now send **cooking instructions**:\n(step-by-step)")
     await state.set_state(AddRecipeState.instructions)
 
@@ -88,7 +79,7 @@ async def process_instructions(message: Message, state: FSMContext):
             title=data["title"],
             instructions=message.text,
             ingredients_str=data["ingredients"],
-            description=data.get("description"),
+            description=None,
         )
 
         await message.answer(
@@ -170,6 +161,7 @@ async def cmd_help_slash(message: Message):
         "📚 **My Recipes** — view all your recipes\n"
         "🔍 **Suggest Recipe** — find what to cook by ingredients\n"
         "🗑 **Delete Recipe** — remove a recipe\n\n"
+        "Flow: title → ingredients → instructions\n"
         "Just tap buttons or use /commands!",
         parse_mode="Markdown",
         reply_markup=main_keyboard,
