@@ -150,6 +150,8 @@ async def delete_recipe(db: AsyncSession, recipe_id: int, user_id: int):
 async def update_recipe(db: AsyncSession, recipe_id: int, user_id: int,
                         title: str, instructions: str, ingredients_str: str):
     """Обновить рецепт (title, instructions, ingredients)"""
+    from sqlalchemy import text
+
     result = await db.execute(
         select(Recipe).where(Recipe.id == recipe_id, Recipe.user_id == user_id)
     )
@@ -158,14 +160,17 @@ async def update_recipe(db: AsyncSession, recipe_id: int, user_id: int,
     if not recipe:
         return False
 
-    # Обновляем основные поля
-    recipe.title = title
-    recipe.instructions = instructions
+    # Обновляем основные поля напрямую
+    await db.execute(
+        text("UPDATE recipes SET title = :title, instructions = :instructions WHERE id = :id"),
+        {"title": title, "instructions": instructions, "id": recipe_id}
+    )
 
-    # Удаляем старые ингредиенты
-    for link in recipe.ingredient_links:
-        await db.delete(link)
-    await db.flush()
+    # Удаляем старые ингредиенты через raw SQL
+    await db.execute(
+        text("DELETE FROM recipe_ingredients WHERE recipe_id = :id"),
+        {"id": recipe_id}
+    )
 
     # Добавляем новые ингредиенты
     ingredient_parts = [i.strip() for i in ingredients_str.split(",") if i.strip()]
@@ -180,13 +185,10 @@ async def update_recipe(db: AsyncSession, recipe_id: int, user_id: int,
             db.add(ingredient)
             await db.flush()
 
-        link = RecipeIngredient(
-            recipe_id=recipe.id,
-            ingredient_id=ingredient.id,
-            quantity=quantity,
-            unit=unit,
+        await db.execute(
+            text("INSERT INTO recipe_ingredients (recipe_id, ingredient_id, quantity, unit) VALUES (:rid, :iid, :qty, :unit)"),
+            {"rid": recipe_id, "iid": ingredient.id, "qty": quantity, "unit": unit}
         )
-        db.add(link)
 
     await db.commit()
     return True
