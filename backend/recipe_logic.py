@@ -6,21 +6,21 @@ import re
 
 
 def parse_ingredient(ingredient_str):
-    """Parse ingredient string like 'помидоры 4 штуки' or 'творог 200г'"""
+    """Parse ingredient string like 'tomatoes 4 pcs' or 'cottage cheese 200g'"""
     ingredient_str = ingredient_str.strip()
     
-    match = re.match(r'^(.+?)\s+(\d+\.?\d*)\s*(г|кг|мл|л|шт|штуки|ч\.?л\.?|ст\.?л\.?|щепотка|по вкусу)?$', ingredient_str, re.IGNORECASE)
+    match = re.match(r'^(.+?)\s+(\d+\.?\d*)\s*(g|kg|ml|l|pcs|pieces|tsp|tbsp|pinch|to taste|cloves|slices)?$', ingredient_str, re.IGNORECASE)
     
     if match:
         name = match.group(1).strip()
         quantity = float(match.group(2))
         unit = match.group(3) if match.group(3) else ""
         unit_map = {
-            'г': 'г', 'кг': 'кг', 'мл': 'мл', 'л': 'л',
-            'шт': 'шт', 'штуки': 'шт',
-            'чл': 'ч.л.', 'ч.л.': 'ч.л.',
-            'стл': 'ст.л.', 'ст.л.': 'ст.л.',
-            'щепотка': 'щепотка', 'по вкусу': 'по вкусу'
+            'g': 'g', 'kg': 'kg', 'ml': 'ml', 'l': 'l',
+            'pcs': 'pcs', 'pieces': 'pcs',
+            'tsp': 'tsp', 'tbsp': 'tbsp',
+            'pinch': 'pinch', 'to taste': 'to taste',
+            'cloves': 'cloves', 'slices': 'slices'
         }
         unit = unit_map.get(unit.lower(), unit.lower()) if unit else ""
         return name.lower(), quantity, unit

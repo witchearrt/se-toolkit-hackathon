@@ -55,7 +55,8 @@ async def process_title(message: Message, state: FSMContext):
     await state.update_data(title=message.text)
     await message.answer(
         "🥕 Now send **ingredients with quantities** (comma-separated):\n"
-        "e.g., 'помидоры 4 шт, творог 200г, мука 500г, соль 1 ч.л.'"
+        "e.g., 'tomatoes 4 pcs, cottage cheese 200g, flour 500g, salt 1 tsp'\n"
+        "Format: `ingredient quantity unit` (unit is optional: g, kg, ml, l, pcs, tsp, tbsp)"
     )
     await state.set_state(AddRecipeState.ingredients)
 
