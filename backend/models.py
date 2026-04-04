@@ -1,14 +1,6 @@
-from sqlalchemy import Column, Integer, String, Text, ForeignKey, Table
+from sqlalchemy import Column, Integer, String, Text, ForeignKey, Float
 from sqlalchemy.orm import relationship
 from database import Base
-
-# Связь многие-ко-многим для рецептов и ингредиентов
-recipe_ingredients = Table(
-    "recipe_ingredients",
-    Base.metadata,
-    Column("recipe_id", Integer, ForeignKey("recipes.id")),
-    Column("ingredient_id", Integer, ForeignKey("ingredients.id")),
-)
 
 
 class User(Base):
@@ -25,7 +17,20 @@ class Ingredient(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(100), unique=True, nullable=False)
-    recipes = relationship("Recipe", secondary=recipe_ingredients, back_populates="ingredients")
+    recipe_links = relationship("RecipeIngredient", back_populates="ingredient")
+
+
+class RecipeIngredient(Base):
+    """Association model linking recipes to ingredients with quantity"""
+    __tablename__ = "recipe_ingredients"
+
+    recipe_id = Column(Integer, ForeignKey("recipes.id"), primary_key=True)
+    ingredient_id = Column(Integer, ForeignKey("ingredients.id"), primary_key=True)
+    quantity = Column(Float, nullable=True)
+    unit = Column(String(50), nullable=True)
+    
+    ingredient = relationship("Ingredient", back_populates="recipe_links")
+    recipe = relationship("Recipe", back_populates="ingredient_links")
 
 
 class Recipe(Base):
@@ -37,5 +42,11 @@ class Recipe(Base):
     instructions = Column(Text, nullable=False)
     servings = Column(Integer, nullable=True, default=2)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
-    ingredients = relationship("Ingredient", secondary=recipe_ingredients, back_populates="recipes")
+    
+    ingredient_links = relationship("RecipeIngredient", back_populates="recipe", cascade="all, delete-orphan")
     user = relationship("User", back_populates="recipes")
+
+    @property
+    def ingredients(self):
+        """Return list of Ingredient objects (for backward compatibility)"""
+        return [link.ingredient for link in self.ingredient_links]

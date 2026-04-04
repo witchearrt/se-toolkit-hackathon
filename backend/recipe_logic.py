@@ -1,7 +1,31 @@
-from sqlalchemy import select, func, or_
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
-from models import Recipe, Ingredient, User, recipe_ingredients
+from models import Recipe, Ingredient, User, RecipeIngredient
+import re
+
+
+def parse_ingredient(ingredient_str):
+    """Parse ingredient string like 'помидоры 4 штуки' or 'творог 200г'"""
+    ingredient_str = ingredient_str.strip()
+    
+    match = re.match(r'^(.+?)\s+(\d+\.?\d*)\s*(г|кг|мл|л|шт|штуки|ч\.?л\.?|ст\.?л\.?|щепотка|по вкусу)?$', ingredient_str, re.IGNORECASE)
+    
+    if match:
+        name = match.group(1).strip()
+        quantity = float(match.group(2))
+        unit = match.group(3) if match.group(3) else ""
+        unit_map = {
+            'г': 'г', 'кг': 'кг', 'мл': 'мл', 'л': 'л',
+            'шт': 'шт', 'штуки': 'шт',
+            'чл': 'ч.л.', 'ч.л.': 'ч.л.',
+            'стл': 'ст.л.', 'ст.л.': 'ст.л.',
+            'щепотка': 'щепотка', 'по вкусу': 'по вкусу'
+        }
+        unit = unit_map.get(unit.lower(), unit.lower()) if unit else ""
+        return name.lower(), quantity, unit
+    else:
+        return ingredient_str.lower(), None, ""
 
 
 async def get_or_create_user(db: AsyncSession, telegram_id: str, username: str = None):
@@ -20,34 +44,38 @@ async def get_or_create_user(db: AsyncSession, telegram_id: str, username: str =
 
 async def create_recipe(db: AsyncSession, user_id: int, title: str, instructions: str,
                         ingredients_str: str, description: str = None, servings: int = 2):
-    """Создать новый рецепт"""
-    # Парсим ингредиенты (через запятую)
-    ingredient_names = [i.strip().lower() for i in ingredients_str.split(",") if i.strip()]
+    """Создать новый рецепт с количеством ингредиентов"""
+    ingredient_parts = [i.strip() for i in ingredients_str.split(",") if i.strip()]
 
-    # Получаем или создаём ингредиенты
-    ingredients = []
-    for name in ingredient_names:
-        result = await db.execute(select(Ingredient).where(func.lower(Ingredient.name) == name))
-        ingredient = result.scalar_one_or_none()
-
-        if not ingredient:
-            ingredient = Ingredient(name=name)
-            db.add(ingredient)
-            await db.commit()
-            await db.refresh(ingredient)
-
-        ingredients.append(ingredient)
-
-    # Создаём рецепт
     recipe = Recipe(
         title=title,
         description=description,
         instructions=instructions,
         servings=servings,
         user_id=user_id,
-        ingredients=ingredients,
     )
     db.add(recipe)
+    await db.flush()
+
+    for part in ingredient_parts:
+        name, quantity, unit = parse_ingredient(part)
+        
+        result = await db.execute(select(Ingredient).where(func.lower(Ingredient.name) == name))
+        ingredient = result.scalar_one_or_none()
+
+        if not ingredient:
+            ingredient = Ingredient(name=name)
+            db.add(ingredient)
+            await db.flush()
+
+        link = RecipeIngredient(
+            recipe_id=recipe.id,
+            ingredient_id=ingredient.id,
+            quantity=quantity,
+            unit=unit,
+        )
+        db.add(link)
+
     await db.commit()
     await db.refresh(recipe)
 
@@ -58,7 +86,7 @@ async def get_user_recipes(db: AsyncSession, user_id: int):
     """Получить все рецепты пользователя"""
     result = await db.execute(
         select(Recipe)
-        .options(selectinload(Recipe.ingredients))
+        .options(selectinload(Recipe.ingredient_links).selectinload(RecipeIngredient.ingredient))
         .where(Recipe.user_id == user_id)
         .order_by(Recipe.id.desc())
     )
@@ -67,13 +95,11 @@ async def get_user_recipes(db: AsyncSession, user_id: int):
 
 async def suggest_recipes(db: AsyncSession, user_ingredients: list, user_id: int = None):
     """Предложить рецепты на основе имеющихся ингредиентов"""
-    # Нормализуем входные ингредиенты
     user_ingredients = [i.strip().lower() for i in user_ingredients if i.strip()]
 
     if not user_ingredients:
         return []
 
-    # Ищем ингредиенты в БД
     result = await db.execute(
         select(Ingredient).where(func.lower(Ingredient.name).in_(user_ingredients))
     )
@@ -82,26 +108,23 @@ async def suggest_recipes(db: AsyncSession, user_ingredients: list, user_id: int
     if not found_ingredients:
         return []
 
-    # Ищем рецепты, которые содержат эти ингредиенты
     query = (
         select(Recipe)
-        .options(selectinload(Recipe.ingredients))
-        .join(recipe_ingredients)
-        .join(Ingredient)
-        .where(Ingredient.id.in_([i.id for i in found_ingredients]))
+        .options(selectinload(Recipe.ingredient_links).selectinload(RecipeIngredient.ingredient))
+        .join(Recipe.ingredient_links)
+        .join(RecipeIngredient.ingredient)
+        .where(RecipeIngredient.ingredient_id.in_([i.id for i in found_ingredients]))
     )
 
-    # Если указан user_id, показываем только его рецепты
     if user_id:
         query = query.where(Recipe.user_id == user_id)
 
     result = await db.execute(query)
     recipes = result.scalars().all()
 
-    # Сортируем по количеству совпадений (больше совпадений = выше)
     scored_recipes = []
     for recipe in recipes:
-        recipe_ingredient_names = {i.name.lower() for i in recipe.ingredients}
+        recipe_ingredient_names = {link.ingredient.name.lower() for link in recipe.ingredient_links}
         match_count = sum(1 for i in user_ingredients if i in recipe_ingredient_names)
         scored_recipes.append((match_count, recipe))
 

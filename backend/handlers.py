@@ -8,6 +8,9 @@ from aiogram import F
 
 import recipe_logic
 from database import get_db
+from models import Recipe, RecipeIngredient
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 router = Router()
 
@@ -21,6 +24,20 @@ main_keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True,
     input_field_placeholder="Choose an action...",
 )
+
+
+def format_ingredient_with_quantity(link) -> str:
+    """Format RecipeIngredient link with quantity"""
+    name = link.ingredient.name
+    if link.quantity is not None:
+        qty = link.quantity
+        unit = link.unit or ''
+        if qty == int(qty):
+            qty_str = str(int(qty))
+        else:
+            qty_str = str(qty)
+        return f"{name} — {qty_str}{unit}" if unit else f"{name} — {qty_str}"
+    return name
 
 # States for adding recipe
 class AddRecipeState(StatesGroup):
@@ -107,8 +124,9 @@ async def process_title(message: Message, state: FSMContext):
     """Process recipe title"""
     await state.update_data(title=message.text)
     await message.answer(
-        "🥕 Great! Now send the **ingredients** (comma-separated):\n"
-        "e.g., 'pasta, eggs, bacon, parmesan, black pepper'"
+        "🥕 Great! Now send the **ingredients with quantities** (comma-separated):\n"
+        "e.g., 'помидоры 4 шт, творог 200г, мука 500г, соль 1 ч.л., молоко 200мл'\n"
+        "Format: `ingredient quantity unit` (unit is optional)"
     )
     await state.set_state(AddRecipeState.ingredients)
 
@@ -205,13 +223,14 @@ async def cmd_my_recipes(message: Message):
 
         text = f"📚 **Your Recipes** ({len(recipes)} total):\n\n"
         for recipe in recipes:
-            ingredients_list = ", ".join([i.name for i in recipe.ingredients[:5]])
-            if len(recipe.ingredients) > 5:
-                ingredients_list += "..."
+            ingredient_list = [format_ingredient_with_quantity(link) for link in recipe.ingredient_links[:5]]
+            ingredients_display = ", ".join(ingredient_list)
+            if len(recipe.ingredient_links) > 5:
+                ingredients_display += "..."
 
             text += (
                 f"🔢 **#{recipe.id}** — **{recipe.title}**\n"
-                f"🥕 {ingredients_list}\n\n"
+                f"🥕 {ingredients_display}\n\n"
             )
 
         text += "💡 Tap **🔍 Suggest Recipe** to find what to cook!\n"
@@ -253,18 +272,19 @@ async def process_suggest(message: Message, state: FSMContext):
 
         # Send each recipe with cooking instructions as a separate message
         for match_count, recipe in suggestions[:5]:  # Top 5
+            ingredient_list = [format_ingredient_with_quantity(link) for link in recipe.ingredient_links]
             missing = [
-                i.name for i in recipe.ingredients
-                if i.name.lower() not in [x.lower() for x in ingredients]
+                link.ingredient.name for link in recipe.ingredient_links
+                if link.ingredient.name.lower() not in [x.lower() for x in ingredients]
             ]
 
             text = (
                 f"🍳 **{recipe.title}**\n\n"
                 f"🍽️ **Servings:** {recipe.servings}\n"
-                f"✅ **Match:** {match_count}/{len(recipe.ingredients)} ingredients\n"
+                f"✅ **Match:** {match_count}/{len(recipe.ingredient_links)} ingredients\n"
                 f"❌ **Missing:** {', '.join(missing) if missing else 'nothing! You have everything!'}\n\n"
-                f"🥕 **All ingredients:** {', '.join([i.name for i in recipe.ingredients])}\n\n"
-                f"📖 **Cooking Instructions:**\n"
+                f"🥕 **Ingredients:**\n" + "\n".join([f"• {i}" for i in ingredient_list]) +
+                f"\n\n📖 **Cooking Instructions:**\n"
                 f"{recipe.instructions}"
             )
 
@@ -290,24 +310,20 @@ async def handle_view_recipe_callback(callback: CallbackQuery):
     recipe_id = int(callback.data.split("_")[1])
 
     async for db in get_db():
-        from models import Recipe
-        from sqlalchemy import select
-        from sqlalchemy.orm import selectinload
-
         result = await db.execute(
             select(Recipe)
-            .options(selectinload(Recipe.ingredients))
+            .options(selectinload(Recipe.ingredient_links).selectinload(RecipeIngredient.ingredient))
             .where(Recipe.id == recipe_id)
         )
         recipe = result.scalar_one_or_none()
 
         if recipe:
-            ingredients_list = ", ".join([i.name for i in recipe.ingredients])
+            ingredient_list = [format_ingredient_with_quantity(link) for link in recipe.ingredient_links]
 
             text = (
                 f"📖 **{recipe.title}**\n\n"
                 f"🍽️ **Servings:** {recipe.servings}\n\n"
-                f"🥕 **Ingredients:**\n{ingredients_list}\n\n"
+                f"🥕 **Ingredients:**\n" + "\n".join([f"• {i}" for i in ingredient_list]) + "\n\n"
             )
 
             if recipe.description:
