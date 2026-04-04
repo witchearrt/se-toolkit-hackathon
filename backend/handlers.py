@@ -220,29 +220,77 @@ async def process_suggest(message: Message, state: FSMContext):
         if not suggestions:
             await message.answer(
                 "😔 No matching recipes found.\n"
-                "Try different ingredients or add more recipes!"
+                "Try different ingredients or add more recipes!",
+                reply_markup=main_keyboard,
             )
             await state.clear()
             return
 
-        text = f"🍳 **Found {len(suggestions)} recipe(s):**\n\n"
-
+        # Send each recipe with cooking instructions as a separate message
         for match_count, recipe in suggestions[:5]:  # Top 5
             missing = [
                 i.name for i in recipe.ingredients
                 if i.name.lower() not in [x.lower() for x in ingredients]
             ]
 
-            text += (
-                f"📖 **{recipe.title}** (ID: `{recipe.id}`)\n"
-                f"✅ Matches: {match_count}/{len(recipe.ingredients)} ingredients\n"
-                f"❌ Missing: {', '.join(missing) if missing else 'nothing!'}\n\n"
+            text = (
+                f"🍳 **{recipe.title}**\n\n"
+                f"✅ **Match:** {match_count}/{len(recipe.ingredients)} ingredients\n"
+                f"❌ **Missing:** {', '.join(missing) if missing else 'nothing! You have everything!'}\n\n"
+                f"🥕 **All ingredients:** {', '.join([i.name for i in recipe.ingredients])}\n\n"
+                f"📖 **Cooking Instructions:**\n"
+                f"{recipe.instructions}"
             )
 
-        text += "💡 Tap **🔍 Suggest Recipe** to find what to cook!"
+            # Create inline keyboard with recipe details
+            keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text=f"📖 Full Recipe Details", callback_data=f"view_{recipe.id}")],
+                ]
+            )
 
-        await message.answer(text, parse_mode="Markdown", reply_markup=main_keyboard)
+            await message.answer(text, parse_mode="Markdown", reply_markup=keyboard)
+
+        await message.answer(
+            "💡 Tap **🔍 Suggest Recipe** to search again or use other buttons!",
+            reply_markup=main_keyboard,
+        )
         await state.clear()
+
+
+@router.callback_query(F.data.startswith("view_"))
+async def handle_view_recipe_callback(callback: CallbackQuery):
+    """Show full recipe details"""
+    recipe_id = int(callback.data.split("_")[1])
+
+    async for db in get_db():
+        from models import Recipe
+        from sqlalchemy import select
+        from sqlalchemy.orm import selectinload
+
+        result = await db.execute(
+            select(Recipe)
+            .options(selectinload(Recipe.ingredients))
+            .where(Recipe.id == recipe_id)
+        )
+        recipe = result.scalar_one_or_none()
+
+        if recipe:
+            ingredients_list = ", ".join([i.name for i in recipe.ingredients])
+            
+            text = (
+                f"📖 **{recipe.title}**\n\n"
+                f"🥕 **Ingredients:**\n{ingredients_list}\n\n"
+            )
+
+            if recipe.description:
+                text += f"📝 **Description:**\n{recipe.description}\n\n"
+
+            text += f"👨‍🍳 **Instructions:**\n{recipe.instructions}"
+
+            await callback.message.edit_text(text, parse_mode="Markdown")
+        else:
+            await callback.answer("Recipe not found!", show_alert=True)
 
 
 # Keyboard for delete recipe selection
