@@ -75,7 +75,7 @@ async def cmd_start(message: Message):
         await message.answer(welcome_text, parse_mode="Markdown", reply_markup=main_keyboard)
 
 
-@router.message(F.text == "❓ Help")
+@router.message(F.text == "❓ Help", F.state == None)
 async def cmd_help(message: Message):
     """Handle help button"""
     help_text = (
@@ -106,7 +106,7 @@ async def cmd_help_slash(message: Message):
     await cmd_help(message)
 
 
-@router.message(F.text == "➕ Add Recipe")
+@router.message(F.text == "➕ Add Recipe", F.state == None)
 @router.message(Command("add_recipe"))
 async def cmd_add_recipe(message: Message, state: FSMContext):
     """Start adding a recipe"""
@@ -181,8 +181,59 @@ async def process_instructions(message: Message, state: FSMContext):
         return
 
 
+@router.message(SuggestState.ingredients)
+async def process_suggest(message: Message, state: FSMContext):
+    """Process suggestion request"""
+    ingredients = [i.strip() for i in message.text.split(",") if i.strip()]
+
+    async for db in get_db():
+        user = await recipe_logic.get_or_create_user(db, str(message.from_user.id))
+        suggestions = await recipe_logic.suggest_recipes(db, ingredients, user.id)
+
+        if not suggestions:
+            await message.answer(
+                "😔 No matching recipes found.\n"
+                "Try different ingredients or add more recipes!",
+                reply_markup=main_keyboard,
+            )
+            await state.clear()
+            return
+
+        # Send each recipe with cooking instructions as a separate message
+        for match_count, recipe in suggestions[:5]:  # Top 5
+            ingredient_list = [format_ingredient_with_quantity(link) for link in recipe.ingredient_links]
+            missing = [
+                link.ingredient.name for link in recipe.ingredient_links
+                if link.ingredient.name.lower() not in [x.lower() for x in ingredients]
+            ]
+
+            text = (
+                f"🍳 **{recipe.title}**\n\n"
+                f"✅ **Match:** {match_count}/{len(recipe.ingredient_links)} ingredients\n"
+                f"❌ **Missing:** {', '.join(missing) if missing else 'nothing! You have everything!'}\n\n"
+                f"🥕 **Ingredients:**\n" + "\n".join([f"• {i}" for i in ingredient_list]) +
+                f"\n\n📖 **Cooking Instructions:**\n"
+                f"{recipe.instructions}"
+            )
+
+            # Create inline keyboard with recipe details
+            keyboard = InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text=f"📖 Full Recipe Details", callback_data=f"view_{recipe.id}")],
+                ]
+            )
+
+            await message.answer(text, parse_mode="Markdown", reply_markup=keyboard)
+
+        await message.answer(
+            "💡 Tap **🔍 Suggest Recipe** to search again or use other buttons!",
+            reply_markup=main_keyboard,
+        )
+        await state.clear()
+
+
 @router.message(Command("my_recipes"))
-@router.message(F.text == "📚 My Recipes")
+@router.message(F.text == "📚 My Recipes", F.state == None)
 async def cmd_my_recipes(message: Message):
     """Show user's recipes"""
     async for db in get_db():
@@ -216,7 +267,7 @@ async def cmd_my_recipes(message: Message):
 
 
 @router.message(Command("suggest"))
-@router.message(F.text == "🔍 Suggest Recipe")
+@router.message(F.text == "🔍 Suggest Recipe", F.state == None)
 async def cmd_suggest(message: Message, state: FSMContext):
     """Start recipe suggestion"""
     await message.answer(
@@ -323,7 +374,7 @@ def get_delete_keyboard(recipes):
 
 
 @router.message(Command("delete_recipe"))
-@router.message(F.text == "🗑 Delete Recipe")
+@router.message(F.text == "🗑 Delete Recipe", F.state == None)
 async def cmd_delete_recipe(message: Message):
     """Show recipes with buttons for deletion"""
     async for db in get_db():
