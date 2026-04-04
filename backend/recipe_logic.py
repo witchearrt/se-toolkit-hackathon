@@ -149,24 +149,25 @@ async def delete_recipe(db: AsyncSession, recipe_id: int, user_id: int):
 
 async def update_recipe(db: AsyncSession, recipe_id: int, user_id: int,
                         title: str, instructions: str, ingredients_str: str):
-    """Обновить рецепт (title, instructions, ingredients)"""
+    """Обновить рецепт — полностью через raw SQL для async безопасности"""
     from sqlalchemy import text
 
+    # Проверяем что рецепт принадлежит пользователю
     result = await db.execute(
-        select(Recipe).where(Recipe.id == recipe_id, Recipe.user_id == user_id)
+        text("SELECT id FROM recipes WHERE id = :id AND user_id = :uid"),
+        {"id": recipe_id, "uid": user_id}
     )
-    recipe = result.scalar_one_or_none()
-
-    if not recipe:
+    row = result.fetchone()
+    if not row:
         return False
 
-    # Обновляем основные поля напрямую
+    # Обновляем основные поля
     await db.execute(
         text("UPDATE recipes SET title = :title, instructions = :instructions WHERE id = :id"),
         {"title": title, "instructions": instructions, "id": recipe_id}
     )
 
-    # Удаляем старые ингредиенты через raw SQL
+    # Удаляем старые ингредиенты
     await db.execute(
         text("DELETE FROM recipe_ingredients WHERE recipe_id = :id"),
         {"id": recipe_id}
@@ -177,17 +178,26 @@ async def update_recipe(db: AsyncSession, recipe_id: int, user_id: int,
     for part in ingredient_parts:
         name, quantity, unit = parse_ingredient(part)
 
-        ing_result = await db.execute(select(Ingredient).where(func.lower(Ingredient.name) == name))
-        ingredient = ing_result.scalar_one_or_none()
+        # Получаем или создаём ингредиент
+        result = await db.execute(
+            text("SELECT id FROM ingredients WHERE name = :name"),
+            {"name": name}
+        )
+        ing_row = result.fetchone()
 
-        if not ingredient:
-            ingredient = Ingredient(name=name)
-            db.add(ingredient)
-            await db.flush()
+        if ing_row:
+            ingredient_id = ing_row[0]
+        else:
+            result = await db.execute(
+                text("INSERT INTO ingredients (name) VALUES (:name) RETURNING id"),
+                {"name": name}
+            )
+            ingredient_id = result.scalar()
 
+        # Вставляем связь
         await db.execute(
             text("INSERT INTO recipe_ingredients (recipe_id, ingredient_id, quantity, unit) VALUES (:rid, :iid, :qty, :unit)"),
-            {"rid": recipe_id, "iid": ingredient.id, "qty": quantity, "unit": unit}
+            {"rid": recipe_id, "iid": ingredient_id, "qty": quantity, "unit": unit}
         )
 
     await db.commit()
