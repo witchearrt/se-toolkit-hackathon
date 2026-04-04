@@ -429,12 +429,14 @@ async def handle_edit(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("editf_"))
 async def handle_edit_field(callback: CallbackQuery, state: FSMContext):
-    parts = callback.data.split("_")
-    field = parts[1]
-    rid = int(parts[3])
-    
+    # Parse: editf_title_5, editf_ingredients_5, editf_instructions_5
+    data = callback.data
+    last_underscore = data.rfind("_")
+    field = data[6:last_underscore]  # between "editf_" and last "_"
+    rid = int(data[last_underscore + 1:])
+
     await state.update_data(recipe_id=rid)
-    
+
     if field == "title":
         await callback.message.edit_text("📝 Enter **new title**:", parse_mode="Markdown")
         await state.set_state(EditRecipeState.new_title)
