@@ -3,8 +3,12 @@ from sqlalchemy.orm import DeclarativeBase
 import os
 
 DATABASE_URL_RAW = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@db:5432/recipes")
-# Convert to asyncpg URL for SQLAlchemy
-DATABASE_URL = DATABASE_URL_RAW.replace("postgresql://", "postgresql+asyncpg://", 1)
+
+# Ensure URL uses asyncpg driver
+if "+asyncpg" not in DATABASE_URL_RAW:
+    DATABASE_URL = DATABASE_URL_RAW.replace("postgresql://", "postgresql+asyncpg://", 1)
+else:
+    DATABASE_URL = DATABASE_URL_RAW
 
 engine = create_async_engine(DATABASE_URL, echo=False)
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)

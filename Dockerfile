@@ -1,5 +1,8 @@
 FROM python:3.11-slim
 
+ARG BUILD_TIME
+ENV BUILD_TIME=${BUILD_TIME}
+
 WORKDIR /app
 
 COPY backend/requirements.txt .
