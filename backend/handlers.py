@@ -1,10 +1,9 @@
 import logging
-from aiogram import Router
-from aiogram.filters import CommandStart, Command
+from aiogram import Router, F
+from aiogram.filters import CommandStart, Command, StateFilter
 from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram import F
 
 import recipe_logic
 from database import get_db
@@ -75,7 +74,7 @@ async def cmd_start(message: Message):
         await message.answer(welcome_text, parse_mode="Markdown", reply_markup=main_keyboard)
 
 
-@router.message(F.text == "❓ Help", F.state == None)
+@router.message(F.text == "❓ Help", StateFilter(None))
 async def cmd_help(message: Message):
     """Handle help button"""
     help_text = (
@@ -106,7 +105,7 @@ async def cmd_help_slash(message: Message):
     await cmd_help(message)
 
 
-@router.message(F.text == "➕ Add Recipe", F.state == None)
+@router.message(F.text == "➕ Add Recipe", StateFilter(None))
 @router.message(Command("add_recipe"))
 async def cmd_add_recipe(message: Message, state: FSMContext):
     """Start adding a recipe"""
@@ -233,7 +232,7 @@ async def process_suggest(message: Message, state: FSMContext):
 
 
 @router.message(Command("my_recipes"))
-@router.message(F.text == "📚 My Recipes", F.state == None)
+@router.message(F.text == "📚 My Recipes", StateFilter(None))
 async def cmd_my_recipes(message: Message):
     """Show user's recipes"""
     async for db in get_db():
@@ -267,7 +266,7 @@ async def cmd_my_recipes(message: Message):
 
 
 @router.message(Command("suggest"))
-@router.message(F.text == "🔍 Suggest Recipe", F.state == None)
+@router.message(F.text == "🔍 Suggest Recipe", StateFilter(None))
 async def cmd_suggest(message: Message, state: FSMContext):
     """Start recipe suggestion"""
     await message.answer(
@@ -374,7 +373,7 @@ def get_delete_keyboard(recipes):
 
 
 @router.message(Command("delete_recipe"))
-@router.message(F.text == "🗑 Delete Recipe", F.state == None)
+@router.message(F.text == "🗑 Delete Recipe", StateFilter(None))
 async def cmd_delete_recipe(message: Message):
     """Show recipes with buttons for deletion"""
     async for db in get_db():
