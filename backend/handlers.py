@@ -6,7 +6,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
 import recipe_logic
-from database import get_db
+from database import async_session
 from models import Recipe, RecipeIngredient
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
@@ -78,7 +78,7 @@ async def process_ingredients(message: Message, state: FSMContext):
 async def process_instructions(message: Message, state: FSMContext):
     data = await state.get_data()
 
-    async for db in get_db():
+    async with async_session() as db:
         user = await recipe_logic.get_or_create_user(db, str(message.from_user.id))
         recipe = await recipe_logic.create_recipe(
             db=db,
@@ -123,7 +123,7 @@ async def edit_instructions(message: Message, state: FSMContext):
     data = await state.get_data()
     rid = data["recipe_id"]
 
-    async for db in get_db():
+    async with async_session() as db:
         user = await recipe_logic.get_or_create_user(db, str(message.from_user.id))
         ok = await recipe_logic.update_recipe(
             db=db,
@@ -154,7 +154,7 @@ async def edit_instructions(message: Message, state: FSMContext):
 async def process_suggest(message: Message, state: FSMContext):
     ingredients = [i.strip() for i in message.text.split(",") if i.strip()]
 
-    async for db in get_db():
+    async with async_session() as db:
         user = await recipe_logic.get_or_create_user(db, str(message.from_user.id))
         suggestions = await recipe_logic.suggest_recipes(db, ingredients, user.id)
 
@@ -195,7 +195,7 @@ async def process_suggest(message: Message, state: FSMContext):
 @router.message(CommandStart())
 async def cmd_start(message: Message):
     username = message.from_user.username or message.from_user.full_name
-    async for db in get_db():
+    async with async_session() as db:
         await recipe_logic.get_or_create_user(db, str(message.from_user.id), username)
     await message.answer(
         f"👋 **Welcome, {username}!**\n\n"
@@ -204,6 +204,7 @@ async def cmd_start(message: Message):
         "➕ Add Recipe\n"
         "📚 My Recipes\n"
         "🔍 Suggest Recipe\n"
+        "✏️ Edit Recipe\n"
         "🗑 Delete Recipe\n"
         "❓ Help",
         parse_mode="Markdown",
@@ -218,6 +219,7 @@ async def cmd_help_slash(message: Message):
         "➕ **Add Recipe** — save new recipe\n"
         "📚 **My Recipes** — view all your recipes\n"
         "🔍 **Suggest Recipe** — find what to cook by ingredients\n"
+        "✏️ **Edit Recipe** — edit an existing recipe\n"
         "🗑 **Delete Recipe** — remove a recipe\n\n"
         "Flow: title → ingredients → instructions\n"
         "Just tap buttons or use /commands!",
@@ -254,7 +256,7 @@ async def cmd_my_recipes_btn(message: Message):
 
 
 async def _show_recipes(message: Message):
-    async for db in get_db():
+    async with async_session() as db:
         user = await recipe_logic.get_or_create_user(db, str(message.from_user.id))
         recipes = await recipe_logic.get_user_recipes(db, user.id)
 
@@ -270,7 +272,7 @@ async def _show_recipes(message: Message):
             ings = [format_ingredient(link) for link in r.ingredient_links[:5]]
             text += f"🔢 **#{r.id}** — **{r.title}**\n🥕 {', '.join(ings)}\n\n"
 
-        text += "🔍 **Suggest Recipe** — find what to cook\n🗑 **Delete Recipe** — remove"
+        text += "🔍 **Suggest Recipe** — find what to cook\n✏️ **Edit Recipe** — modify\n🗑 **Delete Recipe** — remove"
         await message.answer(text, parse_mode="Markdown", reply_markup=main_keyboard)
 
 
@@ -297,30 +299,6 @@ async def cmd_delete_slash(message: Message):
     await _show_delete(message)
 
 
-@router.message(F.text == "🗑 Delete Recipe", StateFilter(None))
-async def cmd_delete_btn(message: Message):
-    await _show_delete(message)
-
-
-async def _show_delete(message: Message):
-    async for db in get_db():
-        user = await recipe_logic.get_or_create_user(db, str(message.from_user.id))
-        recipes = await recipe_logic.get_user_recipes(db, user.id)
-
-        if not recipes:
-            await message.answer(
-                "📭 No recipes!\nTap **➕ Add Recipe** first.",
-                reply_markup=main_keyboard,
-            )
-            return
-
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=f"✏️ #{r.id} {r.title}", callback_data=f"edit_{r.id}")]
-            for r in recipes[:10]
-        ])
-        await message.answer("✏️ **Select recipe to edit:**", reply_markup=kb, parse_mode="Markdown")
-
-
 @router.message(Command("edit_recipe"))
 async def cmd_edit_slash(message: Message):
     await _show_edit(message)
@@ -332,7 +310,7 @@ async def cmd_edit_btn(message: Message):
 
 
 async def _show_edit(message: Message):
-    async for db in get_db():
+    async with async_session() as db:
         user = await recipe_logic.get_or_create_user(db, str(message.from_user.id))
         recipes = await recipe_logic.get_user_recipes(db, user.id)
 
@@ -350,12 +328,36 @@ async def _show_edit(message: Message):
         await message.answer("✏️ **Select recipe to edit:**", reply_markup=kb, parse_mode="Markdown")
 
 
+@router.message(F.text == "🗑 Delete Recipe", StateFilter(None))
+async def cmd_delete_btn(message: Message):
+    await _show_delete(message)
+
+
+async def _show_delete(message: Message):
+    async with async_session() as db:
+        user = await recipe_logic.get_or_create_user(db, str(message.from_user.id))
+        recipes = await recipe_logic.get_user_recipes(db, user.id)
+
+        if not recipes:
+            await message.answer(
+                "📭 No recipes!\nTap **➕ Add Recipe** first.",
+                reply_markup=main_keyboard,
+            )
+            return
+
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=f"🗑 #{r.id} {r.title}", callback_data=f"delete_{r.id}")]
+            for r in recipes[:10]
+        ])
+        await message.answer("🗑 **Select recipe to delete:**", reply_markup=kb, parse_mode="Markdown")
+
+
 # ============ CALLBACKS ============
 
 @router.callback_query(F.data.startswith("view_"))
 async def handle_view(callback: CallbackQuery):
     rid = int(callback.data.split("_")[1])
-    async for db in get_db():
+    async with async_session() as db:
         result = await db.execute(
             select(Recipe).options(selectinload(Recipe.ingredient_links).selectinload(RecipeIngredient.ingredient)).where(Recipe.id == rid)
         )
@@ -374,7 +376,7 @@ async def handle_view(callback: CallbackQuery):
 @router.callback_query(F.data.startswith("delete_"))
 async def handle_delete(callback: CallbackQuery):
     rid = int(callback.data.split("_")[1])
-    async for db in get_db():
+    async with async_session() as db:
         user = await recipe_logic.get_or_create_user(db, str(callback.from_user.id))
         ok = await recipe_logic.delete_recipe(db, rid, user.id)
         if ok:
