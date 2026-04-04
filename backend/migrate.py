@@ -8,6 +8,13 @@ import os
 
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:postgres@db:5432/recipes")
 
+# Convert sqlalchemy URL to asyncpg URL
+if "+asyncpg" in DATABASE_URL:
+    ASYNC_DATABASE_URL = DATABASE_URL
+    DATABASE_URL = DATABASE_URL.replace("+asyncpg", "")
+else:
+    ASYNC_DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://")
+
 
 async def migrate():
     print("🔧 Running database migration...")
