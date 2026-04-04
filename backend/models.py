@@ -35,6 +35,7 @@ class Recipe(Base):
     title = Column(String(200), nullable=False)
     description = Column(Text, nullable=True)
     instructions = Column(Text, nullable=False)
+    servings = Column(Integer, nullable=True, default=2)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     ingredients = relationship("Ingredient", secondary=recipe_ingredients, back_populates="recipes")
     user = relationship("User", back_populates="recipes")

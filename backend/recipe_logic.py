@@ -19,7 +19,7 @@ async def get_or_create_user(db: AsyncSession, telegram_id: str, username: str =
 
 
 async def create_recipe(db: AsyncSession, user_id: int, title: str, instructions: str,
-                        ingredients_str: str, description: str = None):
+                        ingredients_str: str, description: str = None, servings: int = 2):
     """Создать новый рецепт"""
     # Парсим ингредиенты (через запятую)
     ingredient_names = [i.strip().lower() for i in ingredients_str.split(",") if i.strip()]
@@ -43,6 +43,7 @@ async def create_recipe(db: AsyncSession, user_id: int, title: str, instructions
         title=title,
         description=description,
         instructions=instructions,
+        servings=servings,
         user_id=user_id,
         ingredients=ingredients,
     )

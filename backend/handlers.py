@@ -27,6 +27,7 @@ class AddRecipeState(StatesGroup):
     title = State()
     ingredients = State()
     description = State()
+    servings = State()
     instructions = State()
 
 
@@ -73,7 +74,8 @@ async def cmd_help(message: Message):
         "2. Enter recipe title\n"
         "3. Enter ingredients (comma-separated)\n"
         "4. Enter description (optional, type 'skip' to skip)\n"
-        "5. Enter cooking instructions\n\n"
+        "5. Enter number of servings\n"
+        "6. Enter cooking instructions\n\n"
         "**How to get suggestions:**\n"
         "1. Tap **🔍 Suggest Recipe**\n"
         "2. Enter ingredients you have (comma-separated)\n"
@@ -127,6 +129,27 @@ async def process_description(message: Message, state: FSMContext):
     description = message.text if message.text.lower() != "skip" else None
     await state.update_data(description=description)
     await message.answer(
+        "🍽️ How many **servings** does this recipe make?\n"
+        "(e.g., 2, 4, 6)"
+    )
+    await state.set_state(AddRecipeState.servings)
+
+
+@router.message(AddRecipeState.servings)
+async def process_servings(message: Message, state: FSMContext):
+    """Process servings"""
+    try:
+        servings = int(message.text)
+        if servings < 1:
+            raise ValueError
+    except (ValueError, TypeError):
+        await message.answer(
+            "⚠️ Please enter a valid number (e.g., 2, 4, 6)"
+        )
+        return
+
+    await state.update_data(servings=servings)
+    await message.answer(
         "👨‍🍳 Now send the **cooking instructions**:\n"
         "(step-by-step guide)"
     )
@@ -148,11 +171,13 @@ async def process_instructions(message: Message, state: FSMContext):
             instructions=message.text,
             ingredients_str=data["ingredients"],
             description=data.get("description"),
+            servings=data.get("servings", 2),
         )
 
         await message.answer(
             f"✅ **Recipe saved!**\n\n"
             f"📖 **Title:** {recipe.title}\n"
+            f"🍽️ **Servings:** {recipe.servings}\n"
             f"🔢 **ID:** `{recipe.id}`\n\n"
             f"Tap **📚 My Recipes** to see all your recipes.",
             parse_mode="Markdown",
@@ -235,6 +260,7 @@ async def process_suggest(message: Message, state: FSMContext):
 
             text = (
                 f"🍳 **{recipe.title}**\n\n"
+                f"🍽️ **Servings:** {recipe.servings}\n"
                 f"✅ **Match:** {match_count}/{len(recipe.ingredients)} ingredients\n"
                 f"❌ **Missing:** {', '.join(missing) if missing else 'nothing! You have everything!'}\n\n"
                 f"🥕 **All ingredients:** {', '.join([i.name for i in recipe.ingredients])}\n\n"
@@ -277,9 +303,10 @@ async def handle_view_recipe_callback(callback: CallbackQuery):
 
         if recipe:
             ingredients_list = ", ".join([i.name for i in recipe.ingredients])
-            
+
             text = (
                 f"📖 **{recipe.title}**\n\n"
+                f"🍽️ **Servings:** {recipe.servings}\n\n"
                 f"🥕 **Ingredients:**\n{ingredients_list}\n\n"
             )
 
