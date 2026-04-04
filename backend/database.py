@@ -13,6 +13,7 @@ class Base(DeclarativeBase):
 
 
 async def init_db():
+    """Create tables if they don't exist (safe, won't drop data)"""
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
