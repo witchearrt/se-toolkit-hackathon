@@ -299,6 +299,6 @@ async def handle_delete(callback: CallbackQuery):
         user = await recipe_logic.get_or_create_user(db, str(callback.from_user.id))
         ok = await recipe_logic.delete_recipe(db, rid, user.id)
         if ok:
-            await callback.message.edit_text(f"✅ Recipe #{rid} deleted!", reply_markup=main_keyboard)
+            await callback.message.edit_text(f"✅ Recipe #{rid} successfully deleted!", reply_markup=main_keyboard)
         else:
             await callback.message.edit_text(f"❌ Recipe #{rid} not found.", reply_markup=main_keyboard)
