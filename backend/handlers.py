@@ -186,13 +186,20 @@ async def process_suggest(message: Message, state: FSMContext):
             return
 
         for match_count, recipe in suggestions[:5]:
-            ing_list = [format_ingredient(link) for link in recipe.ingredient_links]
-            
-            # Используем частичное совпадение (как в suggest_recipes)
+            # recipe is now a dict, not an ORM object
+            ings = recipe["ingredients"]
+            ing_list = [
+                f"{i['name']} — {int(i['quantity'])}{i['unit'] or ''}" if i['quantity'] is not None
+                else f"{int(i['quantity'])} {i['unit'] or ''}" if i['unit']
+                else i['name']
+                for i in ings
+            ]
+
+            # Используем частичное совпадение
             matched_names = []
             missing_names = []
-            for link in recipe.ingredient_links:
-                db_name = link.ingredient.name.lower()
+            for i in ings:
+                db_name = i["name"].lower()
                 found = False
                 for user_ing in ingredients:
                     user_lower = user_ing.lower()
@@ -200,22 +207,22 @@ async def process_suggest(message: Message, state: FSMContext):
                         found = True
                         break
                 if found:
-                    matched_names.append(link.ingredient.name)
+                    matched_names.append(i["name"])
                 else:
-                    missing_names.append(link.ingredient.name)
+                    missing_names.append(i["name"])
 
-            total = len(recipe.ingredient_links)
+            total = len(ings)
 
             text = (
-                f"🍳 **{recipe.title}**\n\n"
+                f"🍳 **{recipe['title']}**\n\n"
                 f"✅ Match: {match_count}/{total} ingredients\n"
                 f"❌ Missing: {', '.join(missing_names) if missing_names else 'nothing! You have everything!'}\n\n"
                 f"🥕 **Ingredients:**\n" + "\n".join(f"• {i}" for i in ing_list) +
-                f"\n\n📖 **Instructions:**\n{recipe.instructions}"
+                f"\n\n📖 **Instructions:**\n{recipe['instructions']}"
             )
 
             kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="📖 Full Details", callback_data=f"view_{recipe.id}")]
+                [InlineKeyboardButton(text="📖 Full Details", callback_data=f"view_{recipe['id']}")]
             ])
             await message.answer(text, parse_mode="Markdown", reply_markup=kb)
 
@@ -391,16 +398,32 @@ async def _show_delete(message: Message):
 async def handle_view(callback: CallbackQuery):
     rid = int(callback.data.split("_")[1])
     async with async_session() as db:
+        # Загружаем рецепт напрямую через raw SQL
+        from sqlalchemy import text
         result = await db.execute(
-            select(Recipe).options(selectinload(Recipe.ingredient_links).selectinload(RecipeIngredient.ingredient)).where(Recipe.id == rid)
+            text("SELECT id, title, instructions, description, servings FROM recipes WHERE id = :id"),
+            {"id": rid}
         )
-        recipe = result.scalar_one_or_none()
-        if recipe:
-            ings = [format_ingredient(link) for link in recipe.ingredient_links]
-            text = f"📖 **{recipe.title}**\n\n🥕 **Ingredients:**\n" + "\n".join(f"• {i}" for i in ings)
-            if recipe.description:
-                text += f"\n\n📝 {recipe.description}"
-            text += f"\n\n👨‍🍳 **Instructions:**\n{recipe.instructions}"
+        row = result.fetchone()
+        if row:
+            rid, title, instructions, description, servings = row
+            
+            ing_result = await db.execute(
+                text("SELECT i.name, ri.quantity, ri.unit FROM recipe_ingredients ri JOIN ingredients i ON ri.ingredient_id = i.id WHERE ri.recipe_id = :id"),
+                {"id": rid}
+            )
+            ings = ing_result.fetchall()
+            
+            ing_list = [
+                f"{name} — {int(qty)}{unit or ''}" if qty is not None
+                else name
+                for name, qty, unit in ings
+            ]
+            
+            text = f"📖 **{title}**\n\n🥕 **Ingredients:**\n" + "\n".join(f"• {i}" for i in ing_list)
+            if description:
+                text += f"\n\n📝 {description}"
+            text += f"\n\n👨‍🍳 **Instructions:**\n{instructions}"
             await callback.message.edit_text(text, parse_mode="Markdown")
         else:
             await callback.answer("Not found!", show_alert=True)

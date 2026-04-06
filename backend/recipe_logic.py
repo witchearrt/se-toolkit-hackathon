@@ -94,39 +94,75 @@ async def get_user_recipes(db: AsyncSession, user_id: int):
 
 
 async def suggest_recipes(db: AsyncSession, user_ingredients: list, user_id: int = None):
-    """Предложить рецепты — загружаем ВСЕ рецепты и фильтруем в Python"""
+    """Предложить рецепты — через raw SQL для надёжности"""
+    from sqlalchemy import text
+    
     user_ingredients = [i.strip().lower() for i in user_ingredients if i.strip()]
 
     if not user_ingredients:
         return []
 
-    # Загружаем ВСЕ рецепты пользователя с ингредиентами (без JOIN!)
-    query = (
-        select(Recipe)
-        .options(selectinload(Recipe.ingredient_links).selectinload(RecipeIngredient.ingredient))
-    )
+    # 1. Загружаем ВСЕ рецепты
+    sql = """
+        SELECT r.id, r.title, r.instructions, r.description, r.servings
+        FROM recipes r
+        WHERE (:uid IS NULL OR r.user_id = :uid)
+    """
+    result = await db.execute(text(sql), {"uid": user_id})
+    all_recipes = result.fetchall()
 
-    if user_id:
-        query = query.where(Recipe.user_id == user_id)
+    # 2. Загружаем ВСЕ ингредиенты для этих рецептов
+    recipe_ids = [r[0] for r in all_recipes]
+    if not recipe_ids:
+        return []
 
-    result = await db.execute(query)
-    all_recipes = result.scalars().all()
+    placeholders = ",".join([f":rid{i}" for i in range(len(recipe_ids))])
+    params = {f"rid{i}": rid for i, rid in enumerate(recipe_ids)}
 
-    # Фильтруем и сортируем в Python
+    ing_sql = f"""
+        SELECT ri.recipe_id, i.name, ri.quantity, ri.unit
+        FROM recipe_ingredients ri
+        JOIN ingredients i ON ri.ingredient_id = i.id
+        WHERE ri.recipe_id IN ({placeholders})
+    """
+    ing_result = await db.execute(text(ing_sql), params)
+    all_ingredients = ing_result.fetchall()
+
+    # 3. Строим структуру: recipe_id -> [(name, qty, unit), ...]
+    recipe_ingredients_map = {}
+    for row in all_ingredients:
+        rid = row[0]
+        if rid not in recipe_ingredients_map:
+            recipe_ingredients_map[rid] = []
+        recipe_ingredients_map[rid].append({
+            "name": row[1],
+            "quantity": row[2],
+            "unit": row[3],
+        })
+
+    # 4. Фильтруем и сортируем
     scored_recipes = []
     for recipe in all_recipes:
-        recipe_ing_names = [link.ingredient.name.lower() for link in recipe.ingredient_links]
-        
-        # Проверяем есть ли хотя бы одно частичное совпадение
+        rid, title, instructions, description, servings = recipe
+        ings = recipe_ingredients_map.get(rid, [])
+        recipe_ing_names = [i["name"].lower() for i in ings]
+
         match_count = 0
         for user_ing in user_ingredients:
             for recipe_ing in recipe_ing_names:
                 if user_ing in recipe_ing or recipe_ing in user_ing:
                     match_count += 1
-                    break  # один user_ing совпал с одним recipe_ing
-        
+                    break
+
         if match_count > 0:
-            scored_recipes.append((match_count, recipe))
+            scored_recipes.append((match_count, {
+                "id": rid,
+                "title": title,
+                "instructions": instructions,
+                "description": description,
+                "servings": servings,
+                "ingredients": ings,
+            }))
 
     scored_recipes.sort(key=lambda x: x[0], reverse=True)
     return scored_recipes
