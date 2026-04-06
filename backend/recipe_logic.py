@@ -23,12 +23,12 @@ async def suggest_recipes(db: AsyncSession, user_ingredients: list, user_id: int
         return []
 
     # 3. Загружаем ВСЕ рецепты
-    sql = """
-        SELECT r.id, r.title, r.instructions, r.description, r.servings
-        FROM recipes r
-        WHERE (:uid IS NULL OR r.user_id = :uid)
-    """
-    result = await db.execute(text(sql), {"uid": user_id})
+    if user_id:
+        sql = "SELECT r.id, r.title, r.instructions, r.description, r.servings FROM recipes r WHERE r.user_id = :uid"
+        result = await db.execute(text(sql), {"uid": user_id})
+    else:
+        sql = "SELECT r.id, r.title, r.instructions, r.description, r.servings FROM recipes r"
+        result = await db.execute(text(sql))
     all_recipes = result.fetchall()
 
     if not all_recipes:
