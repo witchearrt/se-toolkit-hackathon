@@ -2,3 +2,6 @@ aiogram==3.4.1
 sqlalchemy==2.0.25
 asyncpg==0.29.0
 python-dotenv==1.0.0
+sentence-transformers==2.2.2
+numpy==1.24.3
+torch==2.0.1

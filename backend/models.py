@@ -18,6 +18,18 @@ class Ingredient(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(String(100), unique=True, nullable=False)
     recipe_links = relationship("RecipeIngredient", back_populates="ingredient")
+    synonyms = relationship("IngredientSynonym", back_populates="ingredient", cascade="all, delete-orphan")
+
+
+class IngredientSynonym(Base):
+    """Synonyms for ingredients (e.g., 'baguette' -> 'bread')"""
+    __tablename__ = "ingredient_synonyms"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    ingredient_id = Column(Integer, ForeignKey("ingredients.id"), nullable=False)
+    synonym = Column(String(100), unique=True, nullable=False)
+
+    ingredient = relationship("Ingredient", back_populates="synonyms")
 
 
 class RecipeIngredient(Base):

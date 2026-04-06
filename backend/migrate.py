@@ -53,6 +53,15 @@ async def migrate():
         print("✅ Table 'ingredients' exists")
 
         await conn.execute("""
+            CREATE TABLE IF NOT EXISTS ingredient_synonyms (
+                id SERIAL PRIMARY KEY,
+                ingredient_id INTEGER REFERENCES ingredients(id),
+                synonym VARCHAR(100) UNIQUE NOT NULL
+            );
+        """)
+        print("✅ Table 'ingredient_synonyms' exists")
+
+        await conn.execute("""
             CREATE TABLE IF NOT EXISTS recipe_ingredients (
                 recipe_id INTEGER REFERENCES recipes(id),
                 ingredient_id INTEGER REFERENCES ingredients(id),
