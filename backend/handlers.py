@@ -187,15 +187,29 @@ async def process_suggest(message: Message, state: FSMContext):
 
         for match_count, recipe in suggestions[:5]:
             ing_list = [format_ingredient(link) for link in recipe.ingredient_links]
-            missing = [
-                link.ingredient.name for link in recipe.ingredient_links
-                if link.ingredient.name.lower() not in [x.lower() for x in ingredients]
-            ]
+            
+            # Используем частичное совпадение (как в suggest_recipes)
+            matched_names = []
+            missing_names = []
+            for link in recipe.ingredient_links:
+                db_name = link.ingredient.name.lower()
+                found = False
+                for user_ing in ingredients:
+                    user_lower = user_ing.lower()
+                    if user_lower in db_name or db_name in user_lower:
+                        found = True
+                        break
+                if found:
+                    matched_names.append(link.ingredient.name)
+                else:
+                    missing_names.append(link.ingredient.name)
+
+            total = len(recipe.ingredient_links)
 
             text = (
                 f"🍳 **{recipe.title}**\n\n"
-                f"✅ Match: {match_count}/{len(recipe.ingredient_links)} ingredients\n"
-                f"❌ Missing: {', '.join(missing) if missing else 'nothing!'}\n\n"
+                f"✅ Match: {match_count}/{total} ingredients\n"
+                f"❌ Missing: {', '.join(missing_names) if missing_names else 'nothing! You have everything!'}\n\n"
                 f"🥕 **Ingredients:**\n" + "\n".join(f"• {i}" for i in ing_list) +
                 f"\n\n📖 **Instructions:**\n{recipe.instructions}"
             )
