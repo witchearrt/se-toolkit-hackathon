@@ -1,3 +1,106 @@
+from sqlalchemy import select, func
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+from models import Recipe, Ingredient, User, RecipeIngredient
+import re
+
+
+async def get_or_create_user(db: AsyncSession, telegram_id: str, username: str = None):
+    """Получить или создать пользователя"""
+    result = await db.execute(select(User).where(User.telegram_id == telegram_id))
+    user = result.scalar_one_or_none()
+
+    if not user:
+        user = User(telegram_id=telegram_id, username=username)
+        db.add(user)
+        await db.commit()
+        await db.refresh(user)
+
+    return user
+
+
+async def create_recipe(db: AsyncSession, user_id: int, title: str, instructions: str,
+                        ingredients_str: str, description: str = None, servings: int = 2):
+    """Создать новый рецепт"""
+    ingredient_names = [i.strip().lower() for i in ingredients_str.split(",") if i.strip()]
+
+    ingredients = []
+    for name in ingredient_names:
+        result = await db.execute(select(Ingredient).where(func.lower(Ingredient.name) == name))
+        ingredient = result.scalar_one_or_none()
+
+        if not ingredient:
+            ingredient = Ingredient(name=name)
+            db.add(ingredient)
+            await db.commit()
+            await db.refresh(ingredient)
+
+        ingredients.append(ingredient)
+
+    recipe = Recipe(
+        title=title,
+        description=description,
+        instructions=instructions,
+        servings=servings,
+        user_id=user_id,
+        ingredients=ingredients,
+    )
+    db.add(recipe)
+    await db.commit()
+    await db.refresh(recipe)
+
+    return recipe
+
+
+async def get_user_recipes(db: AsyncSession, user_id: int):
+    """Получить все рецепты пользователя"""
+    result = await db.execute(
+        select(Recipe)
+        .options(selectinload(Recipe.ingredient_links).selectinload(RecipeIngredient.ingredient))
+        .where(Recipe.user_id == user_id)
+        .order_by(Recipe.id.desc())
+    )
+    return result.scalars().all()
+
+
+async def delete_recipe(db: AsyncSession, recipe_id: int, user_id: int):
+    """Удалить рецепт"""
+    result = await db.execute(
+        select(Recipe).where(Recipe.id == recipe_id, Recipe.user_id == user_id)
+    )
+    recipe = result.scalar_one_or_none()
+
+    if recipe:
+        await db.delete(recipe)
+        await db.commit()
+        return True
+    return False
+
+
+def parse_ingredient(ingredient_str):
+    """Parse ingredient string like 'tomatoes 4 pcs' or 'cottage cheese 200g'"""
+    ingredient_str = ingredient_str.strip()
+
+    import re
+    match = re.match(r'^(.+?)\s+(\d+\.?\d*)\s*(g|kg|ml|l|pcs|pieces|tsp|tbsp|pinch|to taste|cloves|slices)?$', ingredient_str, re.IGNORECASE)
+
+    if match:
+        name = match.group(1).strip()
+        quantity = float(match.group(2))
+        unit = match.group(3) if match.group(3) else ""
+        unit_map = {
+            'g': 'g', 'kg': 'kg', 'ml': 'ml', 'l': 'l',
+            'pcs': 'pcs', 'pieces': 'pcs',
+            'tsp': 'tsp', 'tbsp': 'tbsp',
+            'pinch': 'pinch', 'to taste': 'to taste',
+            'cloves': 'cloves', 'slices': 'slices'
+        }
+        unit = unit_map.get(unit.lower(), unit.lower()) if unit else ""
+        return name.lower(), quantity, unit
+    else:
+        return ingredient_str.lower(), None, ""
+
+
 async def suggest_recipes(db: AsyncSession, user_ingredients: list, user_id: int = None):
     """Предложить рецепты — с AI семантическим поиском синонимов"""
     from sqlalchemy import text
