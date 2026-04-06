@@ -494,3 +494,49 @@ async def handle_edit_cancel(callback: CallbackQuery, state: FSMContext):
     await state.clear()
     await callback.message.delete()
     await callback.message.answer("✏️ Edit cancelled.", reply_markup=main_keyboard)
+
+
+@router.message(Command("add_synonym"))
+async def cmd_add_synonym(message: Message):
+    """Add a synonym: /add_synonym bread baguette"""
+    parts = message.text.split(maxsplit=2)
+    if len(parts) < 3:
+        await message.answer(
+            "Usage: `/add_synonym <word> <synonym>`\n"
+            "e.g., `/add_synonym bread baguette`",
+            parse_mode="Markdown",
+        )
+        return
+
+    word = parts[1].lower()
+    synonym = parts[2].lower()
+
+    async with async_session() as db:
+        from sqlalchemy import text
+        # Find or create ingredient for the synonym target
+        result = await db.execute(
+            text("SELECT id FROM ingredients WHERE name = :name"),
+            {"name": synonym}
+        )
+        row = result.fetchone()
+
+        if not row:
+            # Create the ingredient first
+            result = await db.execute(
+                text("INSERT INTO ingredients (name) VALUES (:name) RETURNING id"),
+                {"name": synonym}
+            )
+            ing_id = result.scalar()
+        else:
+            ing_id = row[0]
+
+        # Add synonym
+        try:
+            await db.execute(
+                text("INSERT INTO ingredient_synonyms (ingredient_id, synonym) VALUES (:iid, :syn)"),
+                {"iid": ing_id, "syn": word}
+            )
+            await db.commit()
+            await message.answer(f"✅ Synonym added: **{word}** → **{synonym}**", parse_mode="Markdown")
+        except Exception:
+            await message.answer(f"⚠️ Synonym **{word}** already exists!", parse_mode="Markdown")

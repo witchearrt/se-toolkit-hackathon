@@ -1,123 +1,29 @@
-from sqlalchemy import select, func
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
-from models import Recipe, Ingredient, User, RecipeIngredient
-import re
-
-
-def parse_ingredient(ingredient_str):
-    """Parse ingredient string like 'tomatoes 4 pcs' or 'cottage cheese 200g'"""
-    ingredient_str = ingredient_str.strip()
-    
-    match = re.match(r'^(.+?)\s+(\d+\.?\d*)\s*(g|kg|ml|l|pcs|pieces|tsp|tbsp|pinch|to taste|cloves|slices)?$', ingredient_str, re.IGNORECASE)
-    
-    if match:
-        name = match.group(1).strip()
-        quantity = float(match.group(2))
-        unit = match.group(3) if match.group(3) else ""
-        unit_map = {
-            'g': 'g', 'kg': 'kg', 'ml': 'ml', 'l': 'l',
-            'pcs': 'pcs', 'pieces': 'pcs',
-            'tsp': 'tsp', 'tbsp': 'tbsp',
-            'pinch': 'pinch', 'to taste': 'to taste',
-            'cloves': 'cloves', 'slices': 'slices'
-        }
-        unit = unit_map.get(unit.lower(), unit.lower()) if unit else ""
-        return name.lower(), quantity, unit
-    else:
-        return ingredient_str.lower(), None, ""
-
-
-async def get_or_create_user(db: AsyncSession, telegram_id: str, username: str = None):
-    """Получить или создать пользователя"""
-    result = await db.execute(select(User).where(User.telegram_id == telegram_id))
-    user = result.scalar_one_or_none()
-
-    if not user:
-        user = User(telegram_id=telegram_id, username=username)
-        db.add(user)
-        await db.commit()
-        await db.refresh(user)
-
-    return user
-
-
-async def create_recipe(db: AsyncSession, user_id: int, title: str, instructions: str,
-                        ingredients_str: str, description: str = None, servings: int = 2):
-    """Создать новый рецепт с количеством ингредиентов"""
-    ingredient_parts = [i.strip() for i in ingredients_str.split(",") if i.strip()]
-
-    recipe = Recipe(
-        title=title,
-        description=description,
-        instructions=instructions,
-        servings=servings,
-        user_id=user_id,
-    )
-    db.add(recipe)
-    await db.flush()
-
-    for part in ingredient_parts:
-        name, quantity, unit = parse_ingredient(part)
-        
-        result = await db.execute(select(Ingredient).where(func.lower(Ingredient.name) == name))
-        ingredient = result.scalar_one_or_none()
-
-        if not ingredient:
-            ingredient = Ingredient(name=name)
-            db.add(ingredient)
-            await db.flush()
-
-        link = RecipeIngredient(
-            recipe_id=recipe.id,
-            ingredient_id=ingredient.id,
-            quantity=quantity,
-            unit=unit,
-        )
-        db.add(link)
-
-    await db.commit()
-    await db.refresh(recipe)
-
-    return recipe
-
-
-async def get_user_recipes(db: AsyncSession, user_id: int):
-    """Получить все рецепты пользователя"""
-    result = await db.execute(
-        select(Recipe)
-        .options(selectinload(Recipe.ingredient_links).selectinload(RecipeIngredient.ingredient))
-        .where(Recipe.user_id == user_id)
-        .order_by(Recipe.id.desc())
-    )
-    return result.scalars().all()
-
-
 async def suggest_recipes(db: AsyncSession, user_ingredients: list, user_id: int = None):
-    """Предложить рецепты — с AI семантическим поиском синонимов"""
+    """Предложить рецепты — с поддержкой синонимов из БД"""
     from sqlalchemy import text
-    import synonym_service
 
     user_ingredients = [i.strip() for i in user_ingredients if i.strip()]
 
     if not user_ingredients:
         return []
 
-    # 1. Загружаем все ингредиенты из БД и строим индекс
-    ing_result = await db.execute(text("SELECT name FROM ingredients"))
-    all_ing_names = [row[0] for row in ing_result.fetchall()]
-    
-    synonym_service.build_ingredient_index(all_ing_names)
+    # Загружаем все синонимы: synonym -> ingredient_name
+    syn_result = await db.execute(text("SELECT synonym, i.name FROM ingredient_synonyms s JOIN ingredients i ON s.ingredient_id = i.id"))
+    synonym_map = {}
+    for syn_row in syn_result.fetchall():
+        synonym_map[syn_row[0].lower()] = syn_row[1].lower()
 
-    # 2. Раскрываем синонимы и семантические совпадения
-    matched_db_ingredients = synonym_service.expand_ingredients_with_synonyms(
-        user_ingredients, threshold=0.4
-    )
+    # Раскрываем синонимы
+    expanded = set()
+    for user_ing in user_ingredients:
+        low = user_ing.lower()
+        # Проверяем прямой синоним
+        if low in synonym_map:
+            expanded.add(synonym_map[low])
+        # Добавляем оригинал для partial match
+        expanded.add(low)
 
-    if not matched_db_ingredients:
-        return []
-
-    # 3. Загружаем ВСЕ рецепты
+    # Загружаем ВСЕ рецепты
     sql = """
         SELECT r.id, r.title, r.instructions, r.description, r.servings
         FROM recipes r
@@ -129,7 +35,7 @@ async def suggest_recipes(db: AsyncSession, user_ingredients: list, user_id: int
     if not all_recipes:
         return []
 
-    # 4. Загружаем ингредиенты для рецептов
+    # Загружаем ингредиенты
     recipe_ids = [r[0] for r in all_recipes]
     placeholders = ",".join([f":rid{i}" for i in range(len(recipe_ids))])
     params = {f"rid{i}": rid for i, rid in enumerate(recipe_ids)}
@@ -143,7 +49,6 @@ async def suggest_recipes(db: AsyncSession, user_ingredients: list, user_id: int
     ing_result = await db.execute(text(ing_sql), params)
     all_ingredients_rows = ing_result.fetchall()
 
-    # 5. Строим карту: recipe_id -> [{name, quantity, unit}]
     recipe_ingredients_map = {}
     for row in all_ingredients_rows:
         rid = row[0]
@@ -155,7 +60,7 @@ async def suggest_recipes(db: AsyncSession, user_ingredients: list, user_id: int
             "unit": row[3],
         })
 
-    # 6. Фильтруем и сортируем (с семантическим matching)
+    # Фильтруем и сортируем
     scored_recipes = []
     for recipe in all_recipes:
         rid, title, instructions, description, servings = recipe
@@ -164,14 +69,18 @@ async def suggest_recipes(db: AsyncSession, user_ingredients: list, user_id: int
 
         match_count = 0
         for user_ing in user_ingredients:
+            low = user_ing.lower()
             for recipe_ing in recipe_ing_names:
-                # Точное или частичное совпадение
-                if user_ing.lower() == recipe_ing or \
-                   user_ing.lower() in recipe_ing or recipe_ing in user_ing.lower():
+                # Точное совпадение
+                if low == recipe_ing:
                     match_count += 1
                     break
-                # Семантическое совпадение через embeddings
-                elif recipe_ing in matched_db_ingredients:
+                # Синоним
+                if low in synonym_map and synonym_map[low] == recipe_ing:
+                    match_count += 1
+                    break
+                # Частичное совпадение
+                if low in recipe_ing or recipe_ing in low:
                     match_count += 1
                     break
 
@@ -187,121 +96,3 @@ async def suggest_recipes(db: AsyncSession, user_ingredients: list, user_id: int
 
     scored_recipes.sort(key=lambda x: x[0], reverse=True)
     return scored_recipes
-
-
-async def delete_recipe(db: AsyncSession, recipe_id: int, user_id: int):
-    """Удалить рецепт"""
-    result = await db.execute(
-        select(Recipe).where(Recipe.id == recipe_id, Recipe.user_id == user_id)
-    )
-    recipe = result.scalar_one_or_none()
-
-    if recipe:
-        await db.delete(recipe)
-        await db.commit()
-        return True
-    return False
-
-
-async def update_recipe(db: AsyncSession, recipe_id: int, user_id: int,
-                        title: str, instructions: str, ingredients_str: str):
-    """Обновить рецепт — полностью через raw SQL для async безопасности"""
-    from sqlalchemy import text
-
-    # Проверяем что рецепт принадлежит пользователю
-    result = await db.execute(
-        text("SELECT id FROM recipes WHERE id = :id AND user_id = :uid"),
-        {"id": recipe_id, "uid": user_id}
-    )
-    row = result.fetchone()
-    if not row:
-        return False
-
-    # Обновляем основные поля
-    await db.execute(
-        text("UPDATE recipes SET title = :title, instructions = :instructions WHERE id = :id"),
-        {"title": title, "instructions": instructions, "id": recipe_id}
-    )
-
-    # Удаляем старые ингредиенты
-    await db.execute(
-        text("DELETE FROM recipe_ingredients WHERE recipe_id = :id"),
-        {"id": recipe_id}
-    )
-
-    # Добавляем новые ингредиенты
-    ingredient_parts = [i.strip() for i in ingredients_str.split(",") if i.strip()]
-    for part in ingredient_parts:
-        name, quantity, unit = parse_ingredient(part)
-
-        # Получаем или создаём ингредиент
-        result = await db.execute(
-            text("SELECT id FROM ingredients WHERE name = :name"),
-            {"name": name}
-        )
-        ing_row = result.fetchone()
-
-        if ing_row:
-            ingredient_id = ing_row[0]
-        else:
-            result = await db.execute(
-                text("INSERT INTO ingredients (name) VALUES (:name) RETURNING id"),
-                {"name": name}
-            )
-            ingredient_id = result.scalar()
-
-        # Вставляем связь
-        await db.execute(
-            text("INSERT INTO recipe_ingredients (recipe_id, ingredient_id, quantity, unit) VALUES (:rid, :iid, :qty, :unit)"),
-            {"rid": recipe_id, "iid": ingredient_id, "qty": quantity, "unit": unit}
-        )
-
-    await db.commit()
-    return True
-
-
-async def update_recipe_ingredients(db: AsyncSession, recipe_id: int, ingredients_str: str):
-    """Обновить только ингредиенты рецепта (raw SQL)"""
-    from sqlalchemy import text
-
-    # Проверяем что рецепт существует
-    result = await db.execute(
-        text("SELECT id FROM recipes WHERE id = :id"),
-        {"id": recipe_id}
-    )
-    if not result.fetchone():
-        return False
-
-    # Удаляем старые ингредиенты
-    await db.execute(
-        text("DELETE FROM recipe_ingredients WHERE recipe_id = :id"),
-        {"id": recipe_id}
-    )
-
-    # Добавляем новые ингредиенты
-    ingredient_parts = [i.strip() for i in ingredients_str.split(",") if i.strip()]
-    for part in ingredient_parts:
-        name, quantity, unit = parse_ingredient(part)
-
-        result = await db.execute(
-            text("SELECT id FROM ingredients WHERE name = :name"),
-            {"name": name}
-        )
-        ing_row = result.fetchone()
-
-        if ing_row:
-            ingredient_id = ing_row[0]
-        else:
-            result = await db.execute(
-                text("INSERT INTO ingredients (name) VALUES (:name) RETURNING id"),
-                {"name": name}
-            )
-            ingredient_id = result.scalar()
-
-        await db.execute(
-            text("INSERT INTO recipe_ingredients (recipe_id, ingredient_id, quantity, unit) VALUES (:rid, :iid, :qty, :unit)"),
-            {"rid": recipe_id, "iid": ingredient_id, "qty": quantity, "unit": unit}
-        )
-
-    await db.commit()
-    return True
