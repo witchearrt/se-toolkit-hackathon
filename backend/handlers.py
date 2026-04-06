@@ -195,7 +195,8 @@ async def process_suggest(message: Message, state: FSMContext):
                 for i in ings
             ]
 
-            # Используем частичное совпадение
+            # Используем AI семантическое matching
+            import synonym_service
             matched_names = []
             missing_names = []
             for i in ings:
@@ -203,9 +204,16 @@ async def process_suggest(message: Message, state: FSMContext):
                 found = False
                 for user_ing in ingredients:
                     user_lower = user_ing.lower()
-                    if user_lower in db_name or db_name in user_lower:
+                    # Точное/частичное совпадение
+                    if user_lower == db_name or user_lower in db_name or db_name in user_lower:
                         found = True
                         break
+                if not found:
+                    # AI семантическое совпадение
+                    best_sim = synonym_service._best_semantic_similarity(db_name, ingredients)
+                    if best_sim >= 0.4:
+                        found = True
+                
                 if found:
                     matched_names.append(i["name"])
                 else:

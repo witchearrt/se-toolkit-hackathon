@@ -67,3 +67,36 @@ def expand_ingredients_with_synonyms(user_ingredients, threshold=0.4):
             matched.add(user_ing.lower())
 
     return matched
+
+
+def _best_semantic_similarity(recipe_ing, user_ingredients):
+    """
+    Find best semantic similarity between a recipe ingredient and any user ingredient.
+    Returns the highest cosine similarity score.
+    """
+    if not _ingredient_embeddings:
+        return 0
+
+    model = get_model()
+
+    # Get embedding for the recipe ingredient
+    recipe_emb = _ingredient_embeddings.get(recipe_ing.lower())
+    if recipe_emb is None:
+        # Encode on the fly if not in index
+        recipe_emb = model.encode(recipe_ing.lower(), convert_to_numpy=True)
+
+    best_score = 0
+
+    for user_ing in user_ingredients:
+        user_lower = user_ing.lower()
+        user_emb = _ingredient_embeddings.get(user_lower)
+        if user_emb is None:
+            user_emb = model.encode(user_lower, convert_to_numpy=True)
+
+        similarity = np.dot(recipe_emb, user_emb) / (
+            np.linalg.norm(recipe_emb) * np.linalg.norm(user_emb) + 1e-9
+        )
+        if similarity > best_score:
+            best_score = similarity
+
+    return best_score

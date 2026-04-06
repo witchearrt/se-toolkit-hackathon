@@ -117,15 +117,7 @@ async def suggest_recipes(db: AsyncSession, user_ingredients: list, user_id: int
 
     synonym_service.build_ingredient_index(all_ing_names)
 
-    # 2. Раскрываем синонимы и семантические совпадения
-    matched_db_ingredients = synonym_service.expand_ingredients_with_synonyms(
-        user_ingredients, threshold=0.4
-    )
-
-    if not matched_db_ingredients:
-        return []
-
-    # 3. Загружаем ВСЕ рецепты
+    # 2. Загружаем ВСЕ рецепты
     if user_id:
         sql = "SELECT r.id, r.title, r.instructions, r.description, r.servings FROM recipes r WHERE r.user_id = :uid"
         result = await db.execute(text(sql), {"uid": user_id})
@@ -137,7 +129,7 @@ async def suggest_recipes(db: AsyncSession, user_ingredients: list, user_id: int
     if not all_recipes:
         return []
 
-    # 4. Загружаем ингредиенты для рецептов
+    # 3. Загружаем ингредиенты для рецептов
     recipe_ids = [r[0] for r in all_recipes]
     placeholders = ",".join([f":rid{i}" for i in range(len(recipe_ids))])
     params = {f"rid{i}": rid for i, rid in enumerate(recipe_ids)}
@@ -151,7 +143,7 @@ async def suggest_recipes(db: AsyncSession, user_ingredients: list, user_id: int
     ing_result = await db.execute(text(ing_sql), params)
     all_ingredients_rows = ing_result.fetchall()
 
-    # 5. Строим карту: recipe_id -> [{name, quantity, unit}]
+    # 4. Строим карту: recipe_id -> [{name, quantity, unit}]
     recipe_ingredients_map = {}
     for row in all_ingredients_rows:
         rid = row[0]
@@ -163,7 +155,7 @@ async def suggest_recipes(db: AsyncSession, user_ingredients: list, user_id: int
             "unit": row[3],
         })
 
-    # 6. Фильтруем и сортируем (с семантическим matching)
+    # 5. Фильтруем и сортируем с AI семантическим matching
     scored_recipes = []
     for recipe in all_recipes:
         rid, title, instructions, description, servings = recipe
@@ -171,17 +163,23 @@ async def suggest_recipes(db: AsyncSession, user_ingredients: list, user_id: int
         recipe_ing_names = [i["name"].lower() for i in ings]
 
         match_count = 0
-        for user_ing in user_ingredients:
-            for recipe_ing in recipe_ing_names:
-                # Точное или частичное совпадение
-                if user_ing.lower() == recipe_ing or \
-                   user_ing.lower() in recipe_ing or recipe_ing in user_ing.lower():
+        matched_recipe_ings = set()
+        
+        for recipe_ing in recipe_ing_names:
+            # Проверяем точное/частичное совпадение
+            for user_ing in user_ingredients:
+                user_lower = user_ing.lower()
+                if user_lower == recipe_ing or user_lower in recipe_ing or recipe_ing in user_lower:
                     match_count += 1
+                    matched_recipe_ings.add(recipe_ing)
                     break
-                # Семантическое совпадение через AI
-                elif recipe_ing in matched_db_ingredients:
+            
+            # Если не совпало, проверяем AI семантику
+            if recipe_ing not in matched_recipe_ings:
+                best_sim = synonym_service._best_semantic_similarity(recipe_ing, user_ingredients)
+                if best_sim >= 0.4:
                     match_count += 1
-                    break
+                    matched_recipe_ings.add(recipe_ing)
 
         if match_count > 0:
             scored_recipes.append((match_count, {
