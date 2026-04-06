@@ -1,29 +1,28 @@
 async def suggest_recipes(db: AsyncSession, user_ingredients: list, user_id: int = None):
-    """Предложить рецепты — с поддержкой синонимов из БД"""
+    """Предложить рецепты — с AI семантическим поиском синонимов"""
     from sqlalchemy import text
+    import synonym_service
 
     user_ingredients = [i.strip() for i in user_ingredients if i.strip()]
 
     if not user_ingredients:
         return []
 
-    # Загружаем все синонимы: synonym -> ingredient_name
-    syn_result = await db.execute(text("SELECT synonym, i.name FROM ingredient_synonyms s JOIN ingredients i ON s.ingredient_id = i.id"))
-    synonym_map = {}
-    for syn_row in syn_result.fetchall():
-        synonym_map[syn_row[0].lower()] = syn_row[1].lower()
+    # 1. Загружаем все ингредиенты из БД и строим индекс
+    ing_result = await db.execute(text("SELECT name FROM ingredients"))
+    all_ing_names = [row[0] for row in ing_result.fetchall()]
 
-    # Раскрываем синонимы
-    expanded = set()
-    for user_ing in user_ingredients:
-        low = user_ing.lower()
-        # Проверяем прямой синоним
-        if low in synonym_map:
-            expanded.add(synonym_map[low])
-        # Добавляем оригинал для partial match
-        expanded.add(low)
+    synonym_service.build_ingredient_index(all_ing_names)
 
-    # Загружаем ВСЕ рецепты
+    # 2. Раскрываем синонимы и семантические совпадения
+    matched_db_ingredients = synonym_service.expand_ingredients_with_synonyms(
+        user_ingredients, threshold=0.4
+    )
+
+    if not matched_db_ingredients:
+        return []
+
+    # 3. Загружаем ВСЕ рецепты
     sql = """
         SELECT r.id, r.title, r.instructions, r.description, r.servings
         FROM recipes r
@@ -35,7 +34,7 @@ async def suggest_recipes(db: AsyncSession, user_ingredients: list, user_id: int
     if not all_recipes:
         return []
 
-    # Загружаем ингредиенты
+    # 4. Загружаем ингредиенты для рецептов
     recipe_ids = [r[0] for r in all_recipes]
     placeholders = ",".join([f":rid{i}" for i in range(len(recipe_ids))])
     params = {f"rid{i}": rid for i, rid in enumerate(recipe_ids)}
@@ -49,6 +48,7 @@ async def suggest_recipes(db: AsyncSession, user_ingredients: list, user_id: int
     ing_result = await db.execute(text(ing_sql), params)
     all_ingredients_rows = ing_result.fetchall()
 
+    # 5. Строим карту: recipe_id -> [{name, quantity, unit}]
     recipe_ingredients_map = {}
     for row in all_ingredients_rows:
         rid = row[0]
@@ -60,7 +60,7 @@ async def suggest_recipes(db: AsyncSession, user_ingredients: list, user_id: int
             "unit": row[3],
         })
 
-    # Фильтруем и сортируем
+    # 6. Фильтруем и сортируем (с семантическим matching)
     scored_recipes = []
     for recipe in all_recipes:
         rid, title, instructions, description, servings = recipe
@@ -69,18 +69,14 @@ async def suggest_recipes(db: AsyncSession, user_ingredients: list, user_id: int
 
         match_count = 0
         for user_ing in user_ingredients:
-            low = user_ing.lower()
             for recipe_ing in recipe_ing_names:
-                # Точное совпадение
-                if low == recipe_ing:
+                # Точное или частичное совпадение
+                if user_ing.lower() == recipe_ing or \
+                   user_ing.lower() in recipe_ing or recipe_ing in user_ing.lower():
                     match_count += 1
                     break
-                # Синоним
-                if low in synonym_map and synonym_map[low] == recipe_ing:
-                    match_count += 1
-                    break
-                # Частичное совпадение
-                if low in recipe_ing or recipe_ing in low:
+                # Семантическое совпадение через AI
+                elif recipe_ing in matched_db_ingredients:
                     match_count += 1
                     break
 
