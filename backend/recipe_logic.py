@@ -1,4 +1,4 @@
-from sqlalchemy import select, func, or_
+from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from models import Recipe, Ingredient, User, RecipeIngredient
@@ -94,67 +94,41 @@ async def get_user_recipes(db: AsyncSession, user_id: int):
 
 
 async def suggest_recipes(db: AsyncSession, user_ingredients: list, user_id: int = None):
-    """Предложить рецепты на основе имеющихся ингредиентов — с частичным совпадением"""
+    """Предложить рецепты — загружаем ВСЕ рецепты и фильтруем в Python"""
     user_ingredients = [i.strip().lower() for i in user_ingredients if i.strip()]
 
     if not user_ingredients:
         return []
 
-    # Ищем ингредиенты в БД по частичному совпадению (LIKE)
-    conditions = [func.lower(Ingredient.name).like(f"%{ing}%") for ing in user_ingredients]
-    result = await db.execute(
-        select(Ingredient).where(or_(*conditions))
-    )
-    found_ingredients = result.scalars().all()
-
-    if not found_ingredients:
-        return []
-
-    # Строим маппинг: какое пользовательское ингредиент совпало с каким в БД
-    user_to_db = {}  # user_ing -> [db_ing_id, ...]
-    for db_ing in found_ingredients:
-        for user_ing in user_ingredients:
-            if user_ing in db_ing.name.lower() or db_ing.name.lower() in user_ing:
-                if user_ing not in user_to_db:
-                    user_to_db[user_ing] = []
-                user_to_db[user_ing].append(db_ing.id)
-
-    if not user_to_db:
-        return []
-
-    # Собираем все ID найденных ингредиентов
-    matched_db_ids = set()
-    for ids in user_to_db.values():
-        matched_db_ids.update(ids)
-
+    # Загружаем ВСЕ рецепты пользователя с ингредиентами (без JOIN!)
     query = (
         select(Recipe)
         .options(selectinload(Recipe.ingredient_links).selectinload(RecipeIngredient.ingredient))
-        .join(Recipe.ingredient_links)
-        .join(RecipeIngredient.ingredient)
-        .where(RecipeIngredient.ingredient_id.in_(list(matched_db_ids)))
     )
 
     if user_id:
         query = query.where(Recipe.user_id == user_id)
 
     result = await db.execute(query)
-    recipes = result.scalars().all()
+    all_recipes = result.scalars().all()
 
-    # Считаем совпадения по пользовательским ингредиентам
+    # Фильтруем и сортируем в Python
     scored_recipes = []
-    for recipe in recipes:
-        recipe_ing_names = {link.ingredient.name.lower() for link in recipe.ingredient_links}
+    for recipe in all_recipes:
+        recipe_ing_names = [link.ingredient.name.lower() for link in recipe.ingredient_links]
+        
+        # Проверяем есть ли хотя бы одно частичное совпадение
         match_count = 0
         for user_ing in user_ingredients:
             for recipe_ing in recipe_ing_names:
                 if user_ing in recipe_ing or recipe_ing in user_ing:
                     match_count += 1
-                    break
-        scored_recipes.append((match_count, recipe))
+                    break  # один user_ing совпал с одним recipe_ing
+        
+        if match_count > 0:
+            scored_recipes.append((match_count, recipe))
 
     scored_recipes.sort(key=lambda x: x[0], reverse=True)
-
     return scored_recipes
 
 
