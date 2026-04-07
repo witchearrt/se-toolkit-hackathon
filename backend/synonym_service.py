@@ -87,6 +87,7 @@ def _best_semantic_similarity(recipe_ing, user_ingredients):
         recipe_emb = model.encode(recipe_ing.lower(), convert_to_numpy=True)
 
     best_score = 0
+    best_user_ing = None
 
     for user_ing in user_ingredients:
         user_lower = user_ing.lower()
@@ -99,5 +100,9 @@ def _best_semantic_similarity(recipe_ing, user_ingredients):
         )
         if similarity > best_score:
             best_score = similarity
+            best_user_ing = user_ing
+
+    # Debug logging
+    print(f"🔍 AI SIMILARITY: '{recipe_ing}' vs '{best_user_ing}' = {best_score:.4f}")
 
     return best_score
