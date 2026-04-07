@@ -79,10 +79,34 @@ async def suggest_ingredients(message: Message, state: FSMContext):
     async with async_session() as db:
         user = await recipe_logic.get_or_create_user(db, str(message.from_user.id))
         suggestions = await recipe_logic.suggest_recipes(db, ingredients, user.id)
+
+        # If no local matches, try AI-based matching
+        if not suggestions:
+            try:
+                import ai_service
+                # Get all ingredients from DB for AI to work with
+                from models import Ingredient
+                from sqlalchemy import select
+                all_ings = await db.execute(select(Ingredient))
+                known_ingredients = [row.name for row in all_ings.scalars().all()]
+
+                # Fix typos via AI
+                corrected = []
+                for ing in ingredients:
+                    fixed = await ai_service.fix_typo(ing, known_ingredients)
+                    corrected.append(fixed)
+
+                # Retry with corrected ingredients
+                if corrected != ingredients:
+                    suggestions = await recipe_logic.suggest_recipes(db, corrected, user.id)
+            except Exception:
+                pass  # AI unavailable, fall through
+
         if not suggestions:
             await message.answer("😔 No recipes found.\nAdd more recipes or try different ingredients!", reply_markup=main_keyboard)
             await state.clear()
             return
+
         for match_count, recipe in suggestions[:5]:
             ings = recipe["ingredients"]
             ing_list = []

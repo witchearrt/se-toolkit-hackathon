@@ -130,7 +130,7 @@ async def suggest_recipes(db: AsyncSession, user_ingredients: list, user_id: int
                     matched_db_names.add(synonym)
         # 3. Fuzzy match (typos like tonato -> tomato)
         else:
-            close_matches = get_close_matches(low, all_db_ingredients, n=1, cutoff=0.7)
+            close_matches = get_close_matches(low, all_db_ingredients, n=3, cutoff=0.5)
             if close_matches:
                 matched_db_names.add(close_matches[0])
             else:
