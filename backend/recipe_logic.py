@@ -2,6 +2,47 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from models import Recipe, Ingredient, User, RecipeIngredient
+from difflib import get_close_matches
+
+
+def _build_synonym_map():
+    return {
+        'bread': ['baguette', 'bread', 'loaf'],
+        'baguette': ['bread', 'baguette'],
+        'tomato': ['tomatoes', 'tomato'],
+        'tomatoes': ['tomato', 'tomatoes'],
+        'potato': ['potatoes', 'potato'],
+        'potatoes': ['potato', 'potatoes'],
+        'onion': ['onions', 'onion'],
+        'onions': ['onion', 'onions'],
+        'egg': ['eggs', 'egg'],
+        'eggs': ['egg', 'eggs'],
+        'mushroom': ['mushrooms', 'mushroom'],
+        'mushrooms': ['mushroom', 'mushrooms'],
+        'chicken': ['chicken breast', 'chicken thigh', 'chicken'],
+        'cheese': ['parmesan', 'mozzarella', 'cheddar', 'cheese'],
+        'courgette': ['zucchini', 'courgette'],
+        'zucchini': ['courgette', 'zucchini'],
+        'eggplant': ['aubergine', 'eggplant'],
+        'aubergine': ['eggplant', 'aubergine'],
+        'pasta': ['spaghetti', 'penne', 'pasta', 'noodles'],
+        'spaghetti': ['pasta', 'spaghetti'],
+        'bell pepper': ['capsicum', 'bell pepper'],
+        'capsicum': ['bell pepper', 'capsicum'],
+        'ground beef': ['minced beef', 'ground beef', 'mince'],
+        'mince': ['ground beef', 'minced beef', 'mince'],
+        'flour': ['flour', 'all-purpose flour'],
+        'salt': ['salt'],
+        'sugar': ['sugar'],
+        'milk': ['milk'],
+        'butter': ['butter'],
+        'cream': ['cream', 'heavy cream'],
+        'heavy cream': ['cream', 'heavy cream'],
+        'garlic': ['garlic', 'garlic cloves'],
+        'oil': ['olive oil', 'oil', 'vegetable oil'],
+        'olive oil': ['oil', 'olive oil'],
+        'rice': ['rice', 'white rice'],
+    }
 
 
 async def get_or_create_user(db: AsyncSession, telegram_id: str, username: str = None):
@@ -87,11 +128,16 @@ async def suggest_recipes(db: AsyncSession, user_ingredients: list, user_id: int
             for synonym in synonym_map[low]:
                 if synonym in all_db_ingredients:
                     matched_db_names.add(synonym)
-        # 3. Partial match (user_ing in db_name or db_name in user_ing)
+        # 3. Fuzzy match (typos like tonato -> tomato)
         else:
-            for db_name in all_db_ingredients:
-                if low in db_name or db_name in low:
-                    matched_db_names.add(db_name)
+            close_matches = get_close_matches(low, all_db_ingredients, n=1, cutoff=0.7)
+            if close_matches:
+                matched_db_names.add(close_matches[0])
+            else:
+                # Partial match fallback
+                for db_name in all_db_ingredients:
+                    if low in db_name or db_name in low:
+                        matched_db_names.add(db_name)
 
     if not matched_db_names:
         return []
