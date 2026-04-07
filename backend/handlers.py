@@ -209,9 +209,9 @@ async def process_suggest(message: Message, state: FSMContext):
                         found = True
                         break
                 if not found:
-                    # AI семантическое совпадение
+                    # AI семантическое совпадение (lower threshold)
                     best_sim = synonym_service._best_semantic_similarity(db_name, ingredients)
-                    if best_sim >= 0.4:
+                    if best_sim >= 0.25:
                         found = True
                 
                 if found:

@@ -177,7 +177,8 @@ async def suggest_recipes(db: AsyncSession, user_ingredients: list, user_id: int
             # Если не совпало, проверяем AI семантику
             if recipe_ing not in matched_recipe_ings:
                 best_sim = synonym_service._best_semantic_similarity(recipe_ing, user_ingredients)
-                if best_sim >= 0.4:
+                # Lower threshold for better matches (bread ≈ baguette ~0.35)
+                if best_sim >= 0.25:
                     match_count += 1
                     matched_recipe_ings.add(recipe_ing)
 
