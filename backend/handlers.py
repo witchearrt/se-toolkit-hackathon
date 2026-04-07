@@ -13,7 +13,6 @@ from sqlalchemy.orm import selectinload
 
 router = Router()
 
-# Main keyboard WITH Edit Recipe
 main_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="➕ Add Recipe"), KeyboardButton(text="📚 My Recipes")],
@@ -24,8 +23,6 @@ main_keyboard = ReplyKeyboardMarkup(
     input_field_placeholder="Choose an action...",
 )
 
-
-# ============ FSM STATES (NO description for adding!) ============
 
 class AddRecipeState(StatesGroup):
     title = State()
@@ -44,11 +41,7 @@ class EditRecipeState(StatesGroup):
     new_instructions = State()
 
 
-# ================================================================
-# STATE HANDLERS — registered FIRST, process ALL messages in state
-# ================================================================
-
-# --- ADD RECIPE ---
+# ============ STATE HANDLERS ============
 
 @router.message(AddRecipeState.title)
 async def add_title(message: Message, state: FSMContext):
@@ -80,8 +73,6 @@ async def add_instructions(message: Message, state: FSMContext):
     await state.clear()
 
 
-# --- SUGGEST ---
-
 @router.message(SuggestState.ingredients)
 async def suggest_ingredients(message: Message, state: FSMContext):
     ingredients = [i.strip() for i in message.text.split(",") if i.strip()]
@@ -102,9 +93,33 @@ async def suggest_ingredients(message: Message, state: FSMContext):
                     ing_list.append(f"{i['name']} — {qty}{unit}")
                 else:
                     ing_list.append(i["name"])
+            # Check which matched and which are missing
+            synonym_map = recipe_logic._build_synonym_map()
+            matched = []
+            missing = []
+            for i in ings:
+                db_name = i["name"].lower()
+                found = False
+                for user_ing in ingredients:
+                    low = user_ing.lower()
+                    # Exact
+                    if low == db_name:
+                        found = True; break
+                    # Synonym
+                    if low in synonym_map and db_name in synonym_map[low]:
+                        found = True; break
+                    # Partial
+                    if low in db_name or db_name in low:
+                        found = True; break
+                if found:
+                    matched.append(i["name"])
+                else:
+                    missing.append(i["name"])
+            total = len(ings)
             text = (
                 f"🍳 **{recipe['title']}**\n\n"
-                f"✅ Match: {match_count}/{len(ings)} ingredients\n\n"
+                f"✅ Match: {match_count}/{total} ingredients\n"
+                f"❌ Missing: {', '.join(missing) if missing else 'nothing! You have everything!'}\n\n"
                 f"🥕 **Ingredients:**\n" + "\n".join(f"• {i}" for i in ing_list) +
                 f"\n\n📖 **Instructions:**\n{recipe['instructions']}"
             )
@@ -114,7 +129,7 @@ async def suggest_ingredients(message: Message, state: FSMContext):
     await state.clear()
 
 
-# --- EDIT RECIPE ---
+# ============ EDIT ============
 
 @router.message(EditRecipeState.new_title)
 async def edit_title(message: Message, state: FSMContext):
@@ -142,9 +157,7 @@ async def edit_instructions(message: Message, state: FSMContext):
     await state.clear()
 
 
-# ================================================================
-# COMMAND / BUTTON HANDLERS — only when NO state active
-# ================================================================
+# ============ COMMANDS / BUTTONS ============
 
 @router.message(CommandStart())
 async def cmd_start(message: Message):
@@ -258,9 +271,7 @@ async def _show_edit(message: Message):
         await message.answer("✏️ Select recipe to edit:", reply_markup=kb)
 
 
-# ================================================================
-# CALLBACKS
-# ================================================================
+# ============ CALLBACKS ============
 
 @router.callback_query(F.data.startswith("view_"))
 async def handle_view(callback: CallbackQuery):

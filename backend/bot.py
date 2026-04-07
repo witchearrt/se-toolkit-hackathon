@@ -22,12 +22,6 @@ async def main():
     # Initialize database
     await init_db()
 
-    # Preload AI model (avoid first-request freeze)
-    print("🧠 Loading AI synonym model...")
-    import synonym_service
-    synonym_service.get_model()
-    print("✅ AI model loaded!")
-
     # Create bot
     bot = Bot(
         token=BOT_TOKEN,
