@@ -24,7 +24,8 @@ async def create_recipe(db: AsyncSession, user_id: int, title: str, instructions
     """Создать новый рецепт"""
     ingredient_names = [i.strip().lower() for i in ingredients_str.split(",") if i.strip()]
 
-    ingredients = []
+    # Get or create ingredients
+    ingredient_links = []
     for name in ingredient_names:
         result = await db.execute(select(Ingredient).where(func.lower(Ingredient.name) == name))
         ingredient = result.scalar_one_or_none()
@@ -32,20 +33,27 @@ async def create_recipe(db: AsyncSession, user_id: int, title: str, instructions
         if not ingredient:
             ingredient = Ingredient(name=name)
             db.add(ingredient)
-            await db.commit()
-            await db.refresh(ingredient)
+            await db.flush()
 
-        ingredients.append(ingredient)
+        link = RecipeIngredient(ingredient_id=ingredient.id)
+        ingredient_links.append(link)
 
+    # Create recipe WITHOUT passing ingredients (property has no setter!)
     recipe = Recipe(
         title=title,
         description=description,
         instructions=instructions,
         servings=servings,
         user_id=user_id,
-        ingredients=ingredients,
     )
     db.add(recipe)
+    await db.flush()  # Get recipe.id
+
+    # Add ingredient links
+    for link in ingredient_links:
+        link.recipe_id = recipe.id
+        db.add(link)
+
     await db.commit()
     await db.refresh(recipe)
 
