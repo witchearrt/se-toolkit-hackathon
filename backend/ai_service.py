@@ -5,23 +5,16 @@ import httpx
 import os
 import json
 
-QWEN_API_URL = os.getenv("QWEN_API_URL", "http://host.docker.internal:42005/v1/chat/completions")
-QWEN_API_KEY = os.getenv("QWEN_API_KEY", "my-secret-qwen-key")
+QWEN_API_URL = os.getenv("QWEN_API_URL", "http://qwen-code-api:8080/v1/chat/completions")
+QWEN_API_KEY = os.getenv("QWEN_API_KEY", "xxjfnbdhb9mTIWlOL9EQVkBWEGRGOEIR7zTkRR8o8UzX7JV00FhUE3A0tYbmsT9IKleq5WCUAYOrAxKEa6RwDA")
 QWEN_MODEL = os.getenv("QWEN_MODEL", "coder-model")
-
-# Fallback: if host.docker.internal doesn't work, try common Docker gateway IPs
-FALLBACK_URLS = [
-    "http://172.17.0.1:42005/v1/chat/completions",
-    "http://172.18.0.1:42005/v1/chat/completions",
-    "http://172.19.0.1:42005/v1/chat/completions",
-]
 
 
 async def _call_qwen_api(prompt: str) -> str:
     """Call Qwen Code API with a prompt"""
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {QWEN_API_KEY}",
+        "X-API-Key": QWEN_API_KEY,
     }
     payload = {
         "model": QWEN_MODEL,
@@ -30,20 +23,16 @@ async def _call_qwen_api(prompt: str) -> str:
         "max_tokens": 500,
     }
 
-    # Try primary URL first
-    urls_to_try = [QWEN_API_URL] + FALLBACK_URLS
-
-    for url in urls_to_try:
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.post(url, json=payload, headers=headers)
-                if response.status_code == 200:
-                    data = response.json()
-                    return data["choices"][0]["message"]["content"].strip()
-        except Exception:
-            continue
-
-    return ""
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.post(QWEN_API_URL, json=payload, headers=headers)
+            if response.status_code == 200:
+                data = response.json()
+                return data["choices"][0]["message"]["content"].strip()
+            else:
+                return f"[AI Error: {response.status_code} {response.text[:100]}]"
+    except Exception as e:
+        return f"[AI Unavailable: {str(e)[:80]}]"
 
 
 async def fix_typo(user_input: str, known_ingredients: list) -> str:
