@@ -7,8 +7,8 @@ from aiogram.fsm.state import State, StatesGroup
 
 import recipe_logic
 from database import async_session
-from models import Recipe, RecipeIngredient
-from sqlalchemy import select, text
+from models import Recipe, RecipeIngredient, Ingredient
+from sqlalchemy import select, text, func
 from sqlalchemy.orm import selectinload
 
 router = Router()
@@ -159,15 +159,50 @@ async def suggest_ingredients(message: Message, state: FSMContext):
 async def edit_title(message: Message, state: FSMContext):
     data = await state.get_data()
     async with async_session() as db:
-        await db.execute(text("UPDATE recipes SET title = :t WHERE id = :id"), {"t": message.text, "id": data["recipe_id"]})
-        await db.commit()
-    await message.answer(f"✅ Title updated!", reply_markup=main_keyboard)
+        recipe = await db.get(Recipe, data["recipe_id"])
+        if recipe:
+            await db.execute(text("UPDATE recipes SET title = :t WHERE id = :id"), {"t": message.text, "id": data["recipe_id"]})
+            await db.commit()
+            await message.answer(f"✅ Title updated to **{message.text}**!", reply_markup=main_keyboard, parse_mode="Markdown")
+        else:
+            await message.answer(f"❌ Recipe not found!", reply_markup=main_keyboard)
     await state.clear()
 
 
 @router.message(EditRecipeState.new_ingredients)
 async def edit_ingredients(message: Message, state: FSMContext):
-    await message.answer(f"✅ Ingredients updated!", reply_markup=main_keyboard)
+    data = await state.get_data()
+    async with async_session() as db:
+        recipe = await db.get(Recipe, data["recipe_id"])
+        if recipe:
+            # Parse new ingredients
+            new_ingredients = [i.strip() for i in message.text.split(",") if i.strip()]
+            
+            # Clear existing ingredient links
+            for link in recipe.ingredient_links:
+                await db.delete(link)
+            await db.flush()
+            
+            # Create new ingredient links
+            for ing_name in new_ingredients:
+                # Get or create ingredient
+                result = await db.execute(
+                    select(Ingredient).where(func.lower(Ingredient.name) == ing_name.lower())
+                )
+                ingredient = result.scalar_one_or_none()
+                
+                if not ingredient:
+                    ingredient = Ingredient(name=ing_name)
+                    db.add(ingredient)
+                    await db.flush()
+                
+                link = RecipeIngredient(recipe_id=recipe.id, ingredient_id=ingredient.id)
+                db.add(link)
+            
+            await db.commit()
+            await message.answer(f"✅ Ingredients updated for **{recipe.title}**!", reply_markup=main_keyboard, parse_mode="Markdown")
+        else:
+            await message.answer(f"❌ Recipe not found!", reply_markup=main_keyboard)
     await state.clear()
 
 
@@ -175,9 +210,13 @@ async def edit_ingredients(message: Message, state: FSMContext):
 async def edit_instructions(message: Message, state: FSMContext):
     data = await state.get_data()
     async with async_session() as db:
-        await db.execute(text("UPDATE recipes SET instructions = :i WHERE id = :id"), {"i": message.text, "id": data["recipe_id"]})
-        await db.commit()
-    await message.answer(f"✅ Instructions updated!", reply_markup=main_keyboard)
+        recipe = await db.get(Recipe, data["recipe_id"])
+        if recipe:
+            await db.execute(text("UPDATE recipes SET instructions = :i WHERE id = :id"), {"i": message.text, "id": data["recipe_id"]})
+            await db.commit()
+            await message.answer(f"✅ Instructions updated for **{recipe.title}**!", reply_markup=main_keyboard, parse_mode="Markdown")
+        else:
+            await message.answer(f"❌ Recipe not found!", reply_markup=main_keyboard)
     await state.clear()
 
 
@@ -321,9 +360,16 @@ async def handle_delete(callback: CallbackQuery):
         user = await recipe_logic.get_or_create_user(db, str(callback.from_user.id))
         ok = await recipe_logic.delete_recipe(db, rid, user.id)
         if ok:
-            await callback.message.edit_text(f"✅ Recipe #{rid} deleted!", reply_markup=main_keyboard)
+            try:
+                await callback.message.edit_text(f"✅ Recipe #{rid} deleted!")
+            except Exception:
+                await callback.message.answer(f"✅ Recipe #{rid} deleted!", reply_markup=main_keyboard)
         else:
-            await callback.message.edit_text(f"❌ Recipe #{rid} not found.", reply_markup=main_keyboard)
+            try:
+                await callback.message.edit_text(f"❌ Recipe #{rid} not found or doesn't belong to you.")
+            except Exception:
+                await callback.message.answer(f"❌ Recipe #{rid} not found or doesn't belong to you.", reply_markup=main_keyboard)
+        await callback.answer()
 
 
 @router.callback_query(F.data.startswith("edit_"))
@@ -337,20 +383,30 @@ async def handle_edit(callback: CallbackQuery, state: FSMContext):
         [InlineKeyboardButton(text="❌ Cancel", callback_data="edit_cancel")],
     ])
     await callback.message.edit_text(f"✏️ Edit recipe #{rid}\nWhat to change?", reply_markup=kb)
+    await callback.answer()
 
 
 @router.callback_query(F.data.startswith("editf_"))
 async def handle_edit_field(callback: CallbackQuery, state: FSMContext):
     parts = callback.data.split("_")
     field = parts[1]
-    rid = int(parts[3])
+    rid = int(parts[2])
     await state.update_data(recipe_id=rid)
-    if field == "title":
-        await callback.message.edit_text("📝 Enter **new title**:"); await state.set_state(EditRecipeState.new_title)
-    elif field == "ingredients":
-        await callback.message.edit_text("🥕 Enter **new ingredients**:"); await state.set_state(EditRecipeState.new_ingredients)
-    elif field == "instructions":
-        await callback.message.edit_text("👨‍🍳 Enter **new instructions**:"); await state.set_state(EditRecipeState.new_instructions)
+    
+    try:
+        if field == "title":
+            await state.set_state(EditRecipeState.new_title)
+            await callback.message.edit_text("📝 Enter **new title**:")
+        elif field == "ingredients":
+            await state.set_state(EditRecipeState.new_ingredients)
+            await callback.message.edit_text("🥕 Enter **new ingredients** (comma-separated):\ne.g., 'tomatoes 4 pcs, cheese 200g'")
+        elif field == "instructions":
+            await state.set_state(EditRecipeState.new_instructions)
+            await callback.message.edit_text("👨‍🍳 Enter **new instructions**:")
+        await callback.answer()
+    except Exception as e:
+        print(f"Edit field error: {e}")
+        await callback.answer("Error occurred", show_alert=True)
 
 
 @router.callback_query(F.data == "edit_cancel")
