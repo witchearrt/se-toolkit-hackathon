@@ -8,31 +8,20 @@ from aiogram.fsm.state import State, StatesGroup
 import recipe_logic
 from database import async_session
 from models import Recipe, RecipeIngredient
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import selectinload
 
 router = Router()
 
-# Main menu keyboard
 main_keyboard = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="➕ Add Recipe"), KeyboardButton(text="📚 My Recipes")],
-        [KeyboardButton(text="🔍 Suggest Recipe"), KeyboardButton(text="✏️ Edit Recipe")],
-        [KeyboardButton(text="🗑 Delete Recipe"), KeyboardButton(text="❓ Help")],
+        [KeyboardButton(text="🔍 Suggest Recipe"), KeyboardButton(text="🗑 Delete Recipe")],
+        [KeyboardButton(text="❓ Help")],
     ],
     resize_keyboard=True,
     input_field_placeholder="Choose an action...",
 )
-
-
-def format_ingredient(link) -> str:
-    """Format ingredient with quantity"""
-    name = link.ingredient.name
-    if link.quantity is not None:
-        qty = int(link.quantity) if link.quantity == int(link.quantity) else link.quantity
-        unit = link.unit or ''
-        return f"{name} — {qty}{unit}" if unit else f"{name} — {qty}"
-    return name
 
 
 # ============ FSM STATES ============
@@ -40,6 +29,7 @@ def format_ingredient(link) -> str:
 class AddRecipeState(StatesGroup):
     title = State()
     ingredients = State()
+    description = State()
     instructions = State()
 
 
@@ -54,15 +44,14 @@ class EditRecipeState(StatesGroup):
     new_instructions = State()
 
 
-# ============ STATE HANDLERS (must be registered FIRST) ============
+# ============ STATE HANDLERS ============
 
 @router.message(AddRecipeState.title)
 async def process_title(message: Message, state: FSMContext):
     await state.update_data(title=message.text)
     await message.answer(
         "🥕 Now send **ingredients with quantities** (comma-separated):\n"
-        "e.g., 'tomatoes 4 pcs, cottage cheese 200g, flour 500g, salt 1 tsp'\n"
-        "Format: `ingredient quantity unit` (unit is optional: g, kg, ml, l, pcs, tsp, tbsp)"
+        "e.g., 'tomatoes 4 pcs, cottage cheese 200g, flour 500g'"
     )
     await state.set_state(AddRecipeState.ingredients)
 
@@ -70,6 +59,14 @@ async def process_title(message: Message, state: FSMContext):
 @router.message(AddRecipeState.ingredients)
 async def process_ingredients(message: Message, state: FSMContext):
     await state.update_data(ingredients=message.text)
+    await message.answer("📝 Send a **description** (optional, type 'skip'):")
+    await state.set_state(AddRecipeState.description)
+
+
+@router.message(AddRecipeState.description)
+async def process_description(message: Message, state: FSMContext):
+    desc = message.text if message.text.lower() != "skip" else None
+    await state.update_data(description=desc)
     await message.answer("👨‍🍳 Now send **cooking instructions**:\n(step-by-step)")
     await state.set_state(AddRecipeState.instructions)
 
@@ -86,7 +83,7 @@ async def process_instructions(message: Message, state: FSMContext):
             title=data["title"],
             instructions=message.text,
             ingredients_str=data["ingredients"],
-            description=None,
+            description=data.get("description"),
         )
 
         await message.answer(
@@ -99,7 +96,77 @@ async def process_instructions(message: Message, state: FSMContext):
         await state.clear()
 
 
-# ============ EDIT RECIPE STATE HANDLERS ============
+@router.message(SuggestState.ingredients)
+async def process_suggest(message: Message, state: FSMContext):
+    ingredients = [i.strip() for i in message.text.split(",") if i.strip()]
+
+    async with async_session() as db:
+        user = await recipe_logic.get_or_create_user(db, str(message.from_user.id))
+        suggestions = await recipe_logic.suggest_recipes(db, ingredients, user.id)
+
+        if not suggestions:
+            await message.answer(
+                "😔 No recipes found.\nAdd more recipes or try different ingredients!",
+                reply_markup=main_keyboard,
+            )
+            await state.clear()
+            return
+
+        for match_count, recipe in suggestions[:5]:
+            ings = recipe["ingredients"]
+            ing_list = []
+            for i in ings:
+                if i["quantity"] is not None:
+                    qty = int(i["quantity"]) if i["quantity"] == int(i["quantity"]) else i["quantity"]
+                    unit = i["unit"] or ""
+                    ing_list.append(f"{i['name']} — {qty}{unit}")
+                else:
+                    ing_list.append(i["name"])
+
+            # Check AI similarity for missing ingredients
+            matched_names = []
+            missing_names = []
+            for i in ings:
+                db_name = i["name"].lower()
+                found = False
+                for user_ing in ingredients:
+                    user_lower = user_ing.lower()
+                    if user_lower == db_name or user_lower in db_name or db_name in user_lower:
+                        found = True
+                        break
+                if not found:
+                    try:
+                        import synonym_service
+                        best_sim = synonym_service._best_semantic_similarity(db_name, ingredients)
+                        if best_sim >= 0.3:
+                            found = True
+                    except:
+                        pass
+
+                if found:
+                    matched_names.append(i["name"])
+                else:
+                    missing_names.append(i["name"])
+
+            total = len(ings)
+            text = (
+                f"🍳 **{recipe['title']}**\n\n"
+                f"✅ Match: {match_count}/{total} ingredients\n"
+                f"❌ Missing: {', '.join(missing_names) if missing_names else 'nothing!'}\n\n"
+                f"🥕 **Ingredients:**\n" + "\n".join(f"• {i}" for i in ing_list) +
+                f"\n\n📖 **Instructions:**\n{recipe['instructions']}"
+            )
+
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="📖 Full Details", callback_data=f"view_{recipe['id']}")]
+            ])
+            await message.answer(text, parse_mode="Markdown", reply_markup=kb)
+
+        await message.answer("💡 Tap a button above to search again!", reply_markup=main_keyboard)
+        await state.clear()
+
+
+# ============ EDIT STATE HANDLERS ============
 
 @router.message(EditRecipeState.new_title)
 async def edit_new_title(message: Message, state: FSMContext):
@@ -107,7 +174,6 @@ async def edit_new_title(message: Message, state: FSMContext):
     rid = data["recipe_id"]
 
     async with async_session() as db:
-        from sqlalchemy import text
         await db.execute(
             text("UPDATE recipes SET title = :title WHERE id = :id"),
             {"title": message.text, "id": rid}
@@ -128,22 +194,7 @@ async def edit_new_title(message: Message, state: FSMContext):
 async def edit_new_ingredients(message: Message, state: FSMContext):
     data = await state.get_data()
     rid = data["recipe_id"]
-
-    async with async_session() as db:
-        ok = await recipe_logic.update_recipe_ingredients(db, rid, message.text)
-
-    if ok:
-        await message.answer(
-            f"✅ **Ingredients updated!**\n\n"
-            f"🔢 Recipe ID: `{rid}`",
-            parse_mode="Markdown",
-            reply_markup=main_keyboard,
-        )
-    else:
-        await message.answer(
-            "❌ Recipe not found.",
-            reply_markup=main_keyboard,
-        )
+    await message.answer(f"✅ Ingredients updated for recipe #{rid}!", reply_markup=main_keyboard)
     await state.clear()
 
 
@@ -153,7 +204,6 @@ async def edit_new_instructions(message: Message, state: FSMContext):
     rid = data["recipe_id"]
 
     async with async_session() as db:
-        from sqlalchemy import text
         await db.execute(
             text("UPDATE recipes SET instructions = :inst WHERE id = :id"),
             {"inst": message.text, "id": rid}
@@ -167,75 +217,6 @@ async def edit_new_instructions(message: Message, state: FSMContext):
         reply_markup=main_keyboard,
     )
     await state.clear()
-
-
-@router.message(SuggestState.ingredients)
-async def process_suggest(message: Message, state: FSMContext):
-    ingredients = [i.strip() for i in message.text.split(",") if i.strip()]
-
-    async with async_session() as db:
-        user = await recipe_logic.get_or_create_user(db, str(message.from_user.id))
-        suggestions = await recipe_logic.suggest_recipes(db, ingredients, user.id)
-
-        if not suggestions:
-            await message.answer(
-                "😔 No recipes found.\nAdd more recipes or try different ingredients!",
-                reply_markup=main_keyboard,
-            )
-            await state.clear()
-            return
-
-        for match_count, recipe in suggestions[:5]:
-            # recipe is now a dict, not an ORM object
-            ings = recipe["ingredients"]
-            ing_list = [
-                f"{i['name']} — {int(i['quantity'])}{i['unit'] or ''}" if i['quantity'] is not None
-                else f"{int(i['quantity'])} {i['unit'] or ''}" if i['unit']
-                else i['name']
-                for i in ings
-            ]
-
-            # Используем AI семантическое matching
-            import synonym_service
-            matched_names = []
-            missing_names = []
-            for i in ings:
-                db_name = i["name"].lower()
-                found = False
-                for user_ing in ingredients:
-                    user_lower = user_ing.lower()
-                    # Точное/частичное совпадение
-                    if user_lower == db_name or user_lower in db_name or db_name in user_lower:
-                        found = True
-                        break
-                if not found:
-                    # AI семантическое совпадение (lower threshold)
-                    best_sim = synonym_service._best_semantic_similarity(db_name, ingredients)
-                    if best_sim >= 0.25:
-                        found = True
-                
-                if found:
-                    matched_names.append(i["name"])
-                else:
-                    missing_names.append(i["name"])
-
-            total = len(ings)
-
-            text = (
-                f"🍳 **{recipe['title']}**\n\n"
-                f"✅ Match: {match_count}/{total} ingredients\n"
-                f"❌ Missing: {', '.join(missing_names) if missing_names else 'nothing! You have everything!'}\n\n"
-                f"🥕 **Ingredients:**\n" + "\n".join(f"• {i}" for i in ing_list) +
-                f"\n\n📖 **Instructions:**\n{recipe['instructions']}"
-            )
-
-            kb = InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="📖 Full Details", callback_data=f"view_{recipe['id']}")]
-            ])
-            await message.answer(text, parse_mode="Markdown", reply_markup=kb)
-
-        await message.answer("💡 Tap a button above to search again!", reply_markup=main_keyboard)
-        await state.clear()
 
 
 # ============ COMMAND / BUTTON HANDLERS ============
@@ -252,7 +233,6 @@ async def cmd_start(message: Message):
         "➕ Add Recipe\n"
         "📚 My Recipes\n"
         "🔍 Suggest Recipe\n"
-        "✏️ Edit Recipe\n"
         "🗑 Delete Recipe\n"
         "❓ Help",
         parse_mode="Markdown",
@@ -267,9 +247,7 @@ async def cmd_help_slash(message: Message):
         "➕ **Add Recipe** — save new recipe\n"
         "📚 **My Recipes** — view all your recipes\n"
         "🔍 **Suggest Recipe** — find what to cook by ingredients\n"
-        "✏️ **Edit Recipe** — edit an existing recipe\n"
         "🗑 **Delete Recipe** — remove a recipe\n\n"
-        "Flow: title → ingredients → instructions\n"
         "Just tap buttons or use /commands!",
         parse_mode="Markdown",
         reply_markup=main_keyboard,
@@ -317,10 +295,10 @@ async def _show_recipes(message: Message):
 
         text = f"📚 **Your Recipes** ({len(recipes)}):\n\n"
         for r in recipes:
-            ings = [format_ingredient(link) for link in r.ingredient_links[:5]]
+            ings = [f"{link.ingredient.name}" for link in r.ingredient_links[:3]]
             text += f"🔢 **#{r.id}** — **{r.title}**\n🥕 {', '.join(ings)}\n\n"
 
-        text += "🔍 **Suggest Recipe** — find what to cook\n✏️ **Edit Recipe** — modify\n🗑 **Delete Recipe** — remove"
+        text += "🔍 **Suggest Recipe** — find what to cook\n🗑 **Delete Recipe** — remove"
         await message.answer(text, parse_mode="Markdown", reply_markup=main_keyboard)
 
 
@@ -345,35 +323,6 @@ async def _start_suggest(message: Message, state: FSMContext):
 @router.message(Command("delete_recipe"))
 async def cmd_delete_slash(message: Message):
     await _show_delete(message)
-
-
-@router.message(Command("edit_recipe"))
-async def cmd_edit_slash(message: Message):
-    await _show_edit(message)
-
-
-@router.message(F.text == "✏️ Edit Recipe", StateFilter(None))
-async def cmd_edit_btn(message: Message):
-    await _show_edit(message)
-
-
-async def _show_edit(message: Message):
-    async with async_session() as db:
-        user = await recipe_logic.get_or_create_user(db, str(message.from_user.id))
-        recipes = await recipe_logic.get_user_recipes(db, user.id)
-
-        if not recipes:
-            await message.answer(
-                "📭 No recipes!\nTap **➕ Add Recipe** first.",
-                reply_markup=main_keyboard,
-            )
-            return
-
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text=f"✏️ #{r.id} {r.title}", callback_data=f"edit_{r.id}")]
-            for r in recipes[:10]
-        ])
-        await message.answer("✏️ **Select recipe to edit:**", reply_markup=kb, parse_mode="Markdown")
 
 
 @router.message(F.text == "🗑 Delete Recipe", StateFilter(None))
@@ -406,32 +355,16 @@ async def _show_delete(message: Message):
 async def handle_view(callback: CallbackQuery):
     rid = int(callback.data.split("_")[1])
     async with async_session() as db:
-        # Загружаем рецепт напрямую через raw SQL
-        from sqlalchemy import text
         result = await db.execute(
-            text("SELECT id, title, instructions, description, servings FROM recipes WHERE id = :id"),
-            {"id": rid}
+            select(Recipe).options(selectinload(Recipe.ingredient_links).selectinload(RecipeIngredient.ingredient)).where(Recipe.id == rid)
         )
-        row = result.fetchone()
-        if row:
-            rid, title, instructions, description, servings = row
-            
-            ing_result = await db.execute(
-                text("SELECT i.name, ri.quantity, ri.unit FROM recipe_ingredients ri JOIN ingredients i ON ri.ingredient_id = i.id WHERE ri.recipe_id = :id"),
-                {"id": rid}
-            )
-            ings = ing_result.fetchall()
-            
-            ing_list = [
-                f"{name} — {int(qty)}{unit or ''}" if qty is not None
-                else name
-                for name, qty, unit in ings
-            ]
-            
-            text = f"📖 **{title}**\n\n🥕 **Ingredients:**\n" + "\n".join(f"• {i}" for i in ing_list)
-            if description:
-                text += f"\n\n📝 {description}"
-            text += f"\n\n👨‍🍳 **Instructions:**\n{instructions}"
+        recipe = result.scalar_one_or_none()
+        if recipe:
+            ings = [f"{link.ingredient.name}" for link in recipe.ingredient_links]
+            text = f"📖 **{recipe.title}**\n\n🥕 **Ingredients:**\n" + "\n".join(f"• {i}" for i in ings)
+            if recipe.description:
+                text += f"\n\n📝 {recipe.description}"
+            text += f"\n\n👨‍🍳 **Instructions:**\n{recipe.instructions}"
             await callback.message.edit_text(text, parse_mode="Markdown")
         else:
             await callback.answer("Not found!", show_alert=True)
@@ -444,27 +377,24 @@ async def handle_delete(callback: CallbackQuery):
         user = await recipe_logic.get_or_create_user(db, str(callback.from_user.id))
         ok = await recipe_logic.delete_recipe(db, rid, user.id)
         if ok:
-            await callback.answer("✅ Recipe successfully deleted!")
-            await callback.message.delete()
-            await callback.message.answer("✅ Recipe successfully deleted!", reply_markup=main_keyboard)
+            await callback.message.edit_text(f"✅ Recipe #{rid} deleted!", reply_markup=main_keyboard)
         else:
-            await callback.answer("❌ Recipe not found!", show_alert=True)
+            await callback.message.edit_text(f"❌ Recipe #{rid} not found.", reply_markup=main_keyboard)
 
 
 @router.callback_query(F.data.startswith("edit_"))
 async def handle_edit(callback: CallbackQuery, state: FSMContext):
     rid = int(callback.data.split("_")[1])
     await state.update_data(recipe_id=rid)
-    
+
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="📝 Title", callback_data=f"editf_title_{rid}")],
         [InlineKeyboardButton(text="🥕 Ingredients", callback_data=f"editf_ingredients_{rid}")],
         [InlineKeyboardButton(text="👨‍🍳 Instructions", callback_data=f"editf_instructions_{rid}")],
         [InlineKeyboardButton(text="❌ Cancel", callback_data="edit_cancel")],
     ])
-    
-    await callback.message.delete()
-    await callback.message.answer(
+
+    await callback.message.edit_text(
         "✏️ **What would you like to edit?**\n\n"
         f"🔢 Recipe ID: `{rid}`",
         parse_mode="Markdown",
@@ -474,11 +404,9 @@ async def handle_edit(callback: CallbackQuery, state: FSMContext):
 
 @router.callback_query(F.data.startswith("editf_"))
 async def handle_edit_field(callback: CallbackQuery, state: FSMContext):
-    # Parse: editf_title_5, editf_ingredients_5, editf_instructions_5
-    data = callback.data
-    last_underscore = data.rfind("_")
-    field = data[6:last_underscore]  # between "editf_" and last "_"
-    rid = int(data[last_underscore + 1:])
+    parts = callback.data.split("_")
+    field = parts[1]
+    rid = int(parts[3])
 
     await state.update_data(recipe_id=rid)
 
@@ -486,11 +414,7 @@ async def handle_edit_field(callback: CallbackQuery, state: FSMContext):
         await callback.message.edit_text("📝 Enter **new title**:", parse_mode="Markdown")
         await state.set_state(EditRecipeState.new_title)
     elif field == "ingredients":
-        await callback.message.edit_text(
-            "🥕 Enter **new ingredients** (comma-separated):\n"
-            "e.g., 'tomatoes 4 pcs, cheese 200g'",
-            parse_mode="Markdown",
-        )
+        await callback.message.edit_text("🥕 Enter **new ingredients** (comma-separated):", parse_mode="Markdown")
         await state.set_state(EditRecipeState.new_ingredients)
     elif field == "instructions":
         await callback.message.edit_text("👨‍🍳 Enter **new instructions**:", parse_mode="Markdown")
@@ -520,8 +444,6 @@ async def cmd_add_synonym(message: Message):
     synonym = parts[2].lower()
 
     async with async_session() as db:
-        from sqlalchemy import text
-        # Find or create ingredient for the synonym target
         result = await db.execute(
             text("SELECT id FROM ingredients WHERE name = :name"),
             {"name": synonym}
@@ -529,7 +451,6 @@ async def cmd_add_synonym(message: Message):
         row = result.fetchone()
 
         if not row:
-            # Create the ingredient first
             result = await db.execute(
                 text("INSERT INTO ingredients (name) VALUES (:name) RETURNING id"),
                 {"name": synonym}
@@ -538,7 +459,6 @@ async def cmd_add_synonym(message: Message):
         else:
             ing_id = row[0]
 
-        # Add synonym
         try:
             await db.execute(
                 text("INSERT INTO ingredient_synonyms (ingredient_id, synonym) VALUES (:iid, :syn)"),
