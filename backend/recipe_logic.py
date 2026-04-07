@@ -70,7 +70,7 @@ async def suggest_recipes(db: AsyncSession, user_ingredients: list, user_id: int
 
     # Load all ingredients from DB
     all_ings_result = await db.execute(select(Ingredient))
-    all_db_ingredients = [row.name.lower() for row in all_ings_result.fetchall()]
+    all_db_ingredients = [i.name.lower() for i in all_ings_result.scalars().all()]
 
     # Build synonym map: user_input -> db_ingredient_name
     synonym_map = _build_synonym_map()
