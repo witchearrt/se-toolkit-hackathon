@@ -3,6 +3,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from models import Recipe, Ingredient, User, RecipeIngredient
 from difflib import get_close_matches
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def _build_synonym_map():
@@ -104,7 +107,7 @@ async def get_user_recipes(db: AsyncSession, user_id: int):
 
 
 async def suggest_recipes(db: AsyncSession, user_ingredients: list, user_id: int = None):
-    """Suggest recipes with synonym support"""
+    """Suggest recipes with GigaChat AI + fallback to built-in synonyms & fuzzy matching"""
     user_ingredients = [i.strip() for i in user_ingredients if i.strip()]
     if not user_ingredients:
         return []
@@ -113,31 +116,66 @@ async def suggest_recipes(db: AsyncSession, user_ingredients: list, user_id: int
     all_ings_result = await db.execute(select(Ingredient))
     all_db_ingredients = [i.name.lower() for i in all_ings_result.scalars().all()]
 
+    # Try AI correction with GigaChat first
+    corrected_ingredients = []
+    try:
+        import ai_service
+        if await ai_service.is_available():
+            logger.info("[AI] GigaChat available, correcting: %s", user_ingredients)
+            for ing in user_ingredients:
+                fixed = await ai_service.fix_typo(ing, all_db_ingredients)
+                corrected_ingredients.append(fixed)
+                if fixed != ing:
+                    logger.info("[AI] Corrected: '%s' -> '%s'", ing, fixed)
+                else:
+                    logger.info("[AI] No correction for: '%s'", ing)
+            logger.info("[AI] Final corrected: %s", corrected_ingredients)
+        else:
+            logger.info("[AI] GigaChat not available, using fallback")
+            corrected_ingredients = user_ingredients
+    except Exception as e:
+        logger.info("[AI] Error: %s, using fallback", e)
+        corrected_ingredients = user_ingredients
+
     # Build synonym map: user_input -> db_ingredient_name
     synonym_map = _build_synonym_map()
-    
-    # Match user ingredients to DB ingredients (with synonym support)
+
+    # Match corrected ingredients to DB ingredients (with synonym + fuzzy fallback)
     matched_db_names = set()
-    for user_ing in user_ingredients:
+    
+    for user_ing in corrected_ingredients:
         low = user_ing.lower()
         # 1. Exact match
         if low in all_db_ingredients:
             matched_db_names.add(low)
+            logger.info("[AI] Exact match: '%s'", low)
+            # Also add synonyms of this ingredient
+            if low in synonym_map:
+                for syn in synonym_map[low]:
+                    if syn in all_db_ingredients:
+                        matched_db_names.add(syn)
+                        logger.info("[AI] Also matched synonym: '%s' -> '%s'", low, syn)
         # 2. Synonym match
         elif low in synonym_map:
             for synonym in synonym_map[low]:
                 if synonym in all_db_ingredients:
                     matched_db_names.add(synonym)
+                    logger.info("[AI] Synonym match: '%s' -> '%s'", low, synonym)
         # 3. Fuzzy match (typos like tonato -> tomato)
         else:
             close_matches = get_close_matches(low, all_db_ingredients, n=3, cutoff=0.5)
             if close_matches:
                 matched_db_names.add(close_matches[0])
+                logger.info("[AI] Fuzzy match: '%s' -> '%s'", low, close_matches[0])
             else:
                 # Partial match fallback
                 for db_name in all_db_ingredients:
                     if low in db_name or db_name in low:
                         matched_db_names.add(db_name)
+                        logger.info("[AI] Partial match: '%s' in '%s'", low, db_name)
+
+    logger.info("[AI] Matched DB ingredients: %s", matched_db_names)
+    logger.info("[AI] All DB ingredients: %s", all_db_ingredients)
 
     if not matched_db_names:
         return []
@@ -156,12 +194,14 @@ async def suggest_recipes(db: AsyncSession, user_ingredients: list, user_id: int
             )
         )
     all_recipes = result.scalars().all()
+    logger.info("[AI] Found %d recipes for user_id=%s", len(all_recipes), user_id)
 
     # Score recipes
     scored_recipes = []
     for recipe in all_recipes:
         recipe_ing_names = {link.ingredient.name.lower() for link in recipe.ingredient_links}
         match_count = sum(1 for m in matched_db_names if m in recipe_ing_names)
+        logger.info("[AI] Recipe #%d '%s': ingredients=%s, matches=%d", recipe.id, recipe.title, recipe_ing_names, match_count)
         if match_count > 0:
             scored_recipes.append((match_count, {
                 "id": recipe.id,
@@ -173,6 +213,7 @@ async def suggest_recipes(db: AsyncSession, user_ingredients: list, user_id: int
             }))
 
     scored_recipes.sort(key=lambda x: x[0], reverse=True)
+    logger.info("[AI] Final scored recipes: %d matches", len(scored_recipes))
     return scored_recipes
 
 
